@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型网关 · 管理后台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9h16M4 15h16M9 4v16'/%3E%3C/svg%3E">
+<style>
+/* ═══ 设计令牌与组件：整份复用 Qoder-2API 原版 app.css（同仓库 fork，风格保持一致） ═══ */
+:root{
+  --radius:8px;
+  --fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:20px;--fs-2xl:24px;--fs-3xl:28px;
+  --icon-sm:14px;--icon:16px;--icon-lg:20px;
+  --bg:oklch(.984 0 0);
+  --fg:oklch(.21 0 0);
+  --card:oklch(.997 0 0);
+  --popover:oklch(1 0 0);
+  --secondary:oklch(.962 .003 90);
+  --secondary-fg:oklch(.28 0 0);
+  --muted-fg:oklch(.53 0 0);
+  --accent:oklch(.945 .004 90);
+  --primary:oklch(.22 0 0);
+  --primary-fg:oklch(.985 0 0);
+  --destructive:oklch(.577 .215 27);
+  --border:oklch(.912 0 0);
+  --input:oklch(.9 0 0);
+  --sidebar:oklch(.995 0 0);
+  --sidebar-border:oklch(.932 0 0);
+  --ok-fg:oklch(.55 .12 162);
+  --ok-bg:color-mix(in oklab,oklch(.7 .15 162) 13%,transparent);
+  --warn-fg:oklch(.55 .12 70);
+  --warn-bg:color-mix(in oklab,oklch(.78 .15 75) 18%,transparent);
+  --err-fg:oklch(.55 .19 25);
+  --err-bg:color-mix(in oklab,oklch(.66 .2 25) 11%,transparent);
+  --bar-fill:oklch(.75 .15 75);
+  --chevron:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  color-scheme:light;
+}
+.dark{
+  --bg:oklch(.135 0 0);
+  --fg:oklch(.955 0 0);
+  --card:oklch(.182 0 0);
+  --popover:oklch(.172 0 0);
+  --secondary:oklch(.215 0 0);
+  --secondary-fg:oklch(.94 0 0);
+  --muted-fg:oklch(.635 0 0);
+  --accent:oklch(.245 0 0);
+  --primary:oklch(.955 0 0);
+  --primary-fg:oklch(.16 0 0);
+  --destructive:oklch(.66 .19 25);
+  --border:oklch(.272 0 0);
+  --input:oklch(.3 0 0);
+  --sidebar:oklch(.148 0 0);
+  --sidebar-border:oklch(.25 0 0);
+  --ok-fg:oklch(.78 .12 162);
+  --ok-bg:color-mix(in oklab,oklch(.7 .15 162) 16%,transparent);
+  --warn-fg:oklch(.8 .12 75);
+  --warn-bg:color-mix(in oklab,oklch(.75 .15 75) 16%,transparent);
+  --err-fg:oklch(.72 .17 25);
+  --err-bg:color-mix(in oklab,oklch(.65 .2 25) 15%,transparent);
+  --bar-fill:oklch(.7 .13 75);
+  --chevron:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;padding:0;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+*::-webkit-scrollbar{width:5px;height:5px}
+*::-webkit-scrollbar-thumb{border-radius:5px;background:var(--border)}
+*::-webkit-scrollbar-track{background:transparent}
+html{scrollbar-gutter:stable}
+html,body{min-height:100%}
+body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--fg);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:inherit;text-decoration:none}
+::selection{background:color-mix(in oklab,var(--primary) 22%,transparent)}
+:focus-visible{outline:2px solid color-mix(in oklab,var(--fg) 55%,transparent);outline-offset:2px}
+.mono,code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:var(--fs-xs)}
+.muted-xs{font-size:var(--fs-2xs);color:var(--muted-fg)}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.spacer{flex:1}
+.ic{display:inline-flex;flex-shrink:0;line-height:0}
+.ic svg{width:var(--icon);height:var(--icon)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 13px;border-radius:var(--radius);border:1px solid transparent;background:var(--primary);color:var(--primary-fg);font-size:var(--fs-sm);font-weight:500;font-family:inherit;cursor:pointer;white-space:nowrap;user-select:none;transition:background .15s,color .15s,opacity .15s}
+.btn:hover{opacity:.86}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn>svg,.btn .ic svg{width:var(--icon-sm);height:var(--icon-sm);flex-shrink:0}
+.btn-secondary{background:var(--secondary);color:var(--secondary-fg)}
+.btn-secondary:hover{background:var(--accent);opacity:1}
+.btn-ghost{background:transparent;color:var(--muted-fg)}
+.btn-ghost:hover{background:var(--secondary);color:var(--fg);opacity:1}
+.btn-outline{background:transparent;border-color:var(--border);color:var(--muted-fg)}
+.btn-outline:hover{background:var(--secondary);color:var(--fg);opacity:1}
+.btn-danger{background:transparent;color:var(--destructive);border-color:color-mix(in oklab,var(--destructive) 32%,transparent)}
+.btn-danger:hover{background:var(--err-bg);opacity:1}
+.btn-sm{height:28px;padding:0 10px;font-size:var(--fs-xs);border-radius:7px}
+.btn-icon{width:32px;padding:0}
+.btn-sm.btn-icon{width:28px}
+.label{display:block;font-size:var(--fs-xs);font-weight:500;color:var(--muted-fg);margin-bottom:6px}
+.input,.select{height:34px;width:100%;border-radius:var(--radius);border:1px solid var(--input);background:var(--bg);color:var(--fg);padding:0 11px;font-size:var(--fs-sm);font-family:inherit;outline:none;transition:border-color .15s,box-shadow .15s}
+.input::placeholder{color:color-mix(in oklab,var(--muted-fg) 60%,transparent)}
+.input:focus,.select:focus{border-color:color-mix(in oklab,var(--fg) 32%,var(--input));box-shadow:0 0 0 3px color-mix(in oklab,var(--input) 28%,transparent)}
+.select{appearance:none;background-image:var(--chevron);background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;cursor:pointer}
+.input-sm,.select-sm{height:30px;font-size:var(--fs-xs);border-radius:7px}
+.form-row{margin-bottom:14px}
+.field-hint{margin-top:5px;font-size:var(--fs-2xs);color:var(--muted-fg);line-height:1.5}
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:9999px;font-size:var(--fs-2xs);font-weight:500;line-height:1;white-space:nowrap;border:none;font-family:inherit;cursor:default}
+.badge-ok{background:var(--ok-bg);color:var(--ok-fg)}
+.badge-warn{background:var(--warn-bg);color:var(--warn-fg)}
+.badge-err{background:var(--err-bg);color:var(--err-fg)}
+.badge-muted{background:var(--secondary);color:var(--muted-fg)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;box-shadow:0 1px 2px rgb(0 0 0/.03)}
+.card-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;min-height:20px}
+.card-head h3{font-size:var(--fs-md);font-weight:600;letter-spacing:-.01em}
+.space{display:flex;flex-direction:column;gap:20px}
+.page-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.page-head h1{font-size:var(--fs-xl);font-weight:600;letter-spacing:-.015em}
+.page-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.grid{display:grid;gap:12px}
+.metrics-4{grid-template-columns:1fr}
+@media(min-width:640px){.metrics-4{grid-template-columns:repeat(2,1fr)}}
+@media(min-width:1280px){.metrics-4{grid-template-columns:repeat(4,1fr)}}
+.metrics-6{grid-template-columns:1fr}
+@media(min-width:640px){.metrics-6{grid-template-columns:repeat(2,1fr)}}
+@media(min-width:1024px){.metrics-6{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:1440px){.metrics-6{grid-template-columns:repeat(6,1fr)}}
+.metric{min-height:112px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;box-shadow:0 1px 2px rgb(0 0 0/.03)}
+.metric-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.metric-label{font-size:var(--fs-xs);font-weight:500;color:var(--muted-fg)}
+.metric-head .ic svg{color:var(--muted-fg);opacity:.8}
+.metric-value{margin-top:10px;font-size:var(--fs-2xl);font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:32px}
+.metric-detail{margin-top:4px;font-size:var(--fs-2xs);color:var(--muted-fg);min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:var(--fs-xs)}
+th{font-weight:500;color:var(--muted-fg);text-align:left;padding:0 10px 9px;white-space:nowrap;border-bottom:1px solid var(--border);font-size:var(--fs-2xs);letter-spacing:.01em}
+td{padding:10px;border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);vertical-align:middle;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
+.key-chip{background:var(--secondary);padding:3px 8px;border-radius:6px;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis;display:inline-block}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:36px 0;color:var(--muted-fg);font-size:var(--fs-sm)}
+.shell{min-height:100vh}
+.sidebar{position:fixed;inset:0 auto 0 0;width:260px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;padding:22px 14px 14px;z-index:50;transition:transform .25s ease}
+.side-backdrop{position:fixed;inset:0;background:rgba(10,12,16,.45);z-index:40;backdrop-filter:blur(1px)}
+@media(max-width:1023px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:none;box-shadow:0 0 60px rgba(0,0,0,.3)}
+}
+.side-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px;height:28px}
+.logo{display:flex;align-items:center;gap:8px;font-size:var(--fs-lg);font-weight:700;letter-spacing:-.02em;cursor:pointer}
+.sidenav{margin-top:26px;flex:1;overflow-y:auto;padding:0 4px 8px;display:flex;flex-direction:column;gap:2px}
+.nav-link{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:8px;font-size:var(--fs-sm);color:var(--muted-fg);cursor:pointer;transition:background .12s,color .12s}
+.nav-link:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent);color:var(--fg)}
+.nav-link.active{background:var(--secondary);color:var(--fg);font-weight:500}
+.nav-link .ic{width:20px;justify-content:center}
+.nav-link .ic svg{width:var(--icon);height:var(--icon)}
+.side-foot{flex-shrink:0;padding:12px 8px 2px;border-top:1px solid color-mix(in oklab,var(--sidebar-border) 70%,transparent)}
+.side-actions{display:flex;gap:8px}
+.side-actions .btn{flex:1}
+.topbar{display:flex;align-items:center;justify-content:space-between;height:48px;padding:0 14px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:30}
+@media(min-width:1024px){.topbar{display:none}}
+.content{min-height:100vh;display:flex;flex-direction:column}
+@media(min-width:1024px){.content{padding-left:260px}}
+.main{flex:1;width:100%;max-width:1240px;margin:0 auto;padding:26px 20px 76px}
+@media(min-width:640px){.main{padding:30px 32px 76px}}
+.login-page{min-height:100vh;display:flex;flex-direction:column}
+.login-main{flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-width:1240px;margin:0 auto;padding:40px 24px}
+.login-grid{width:100%;display:grid;gap:40px;align-items:center;min-height:280px}
+.login-brand{position:relative;display:none;align-self:stretch;flex-direction:column;justify-content:center;align-items:center;min-width:0}
+.login-brand>*{width:100%;max-width:380px}
+.login-brand-title{font-size:var(--fs-2xl);font-weight:700;letter-spacing:-.02em}
+.login-ver{display:flex;margin-top:10px}
+.login-ver>span{display:inline-flex;align-items:center;padding:3px 8px;border-radius:6px;background:var(--secondary);color:var(--muted-fg);font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:var(--fs-2xs);line-height:1.5;letter-spacing:.02em;overflow-wrap:anywhere}
+.login-sub{margin-top:16px;font-size:var(--fs-sm);line-height:1.7;color:var(--muted-fg)}
+.login-form-col{width:calc(100% - 32px);max-width:336px;margin:0 auto;min-width:0}
+.login-form-sub{margin:8px 0 24px;font-size:var(--fs-sm);line-height:1.7;color:var(--muted-fg)}
+.login-h1{font-size:var(--fs-xl);font-weight:600;letter-spacing:-.015em}
+.login-submit{width:100%;height:36px}
+@media(min-width:1024px){
+  .login-grid{grid-template-columns:2fr 1fr;gap:0}
+  .login-brand{display:flex}
+  .login-brand::after{content:"";position:absolute;inset-block:12px;right:0;width:1px;background:linear-gradient(to bottom,transparent,var(--border) 12%,var(--border) 88%,transparent)}
+}
+.overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(8,10,14,.4);backdrop-filter:blur(3px)}
+.modal{width:100%;max-width:420px;background:var(--popover);border:1px solid color-mix(in oklab,var(--border) 80%,transparent);border-radius:14px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.28);animation:pop .16s ease-out}
+.modal-title{font-size:var(--fs-lg);font-weight:600;margin-bottom:6px}
+.modal-msg{font-size:var(--fs-sm);color:var(--muted-fg);line-height:1.65;margin-bottom:18px}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+@keyframes pop{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1}}
+.toasts{position:fixed;right:16px;bottom:16px;z-index:80;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.toast{display:flex;align-items:flex-start;gap:9px;max-width:360px;background:var(--popover);color:var(--fg);border:1px solid color-mix(in oklab,var(--border) 80%,transparent);border-radius:12px;padding:11px 14px;font-size:var(--fs-sm);box-shadow:0 10px 36px rgba(0,0,0,.14);animation:toastIn .22s cubic-bezier(.21,1.02,.73,1)}
+.toast .ic{margin-top:2px}
+.toast .ic svg{width:var(--icon-sm);height:var(--icon-sm)}
+.toast-ok .ic{color:var(--ok-fg)}
+.toast-err .ic{color:var(--err-fg)}
+@keyframes toastIn{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1}}
+.spin{display:inline-block;width:14px;height:14px;border-radius:9999px;border:2px solid color-mix(in oklab,currentColor 25%,transparent);border-top-color:currentColor;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.view{display:none}
+.view.on{display:block;animation:fadeUp .18s ease-out}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+
+/* ── 本页少量补充样式 ── */
+.mlist{max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+/* 自定义可搜索下拉（与面板同风格，替代原生 datalist） */
+.ss-list{position:fixed;z-index:1200;display:none;background:var(--popover);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.16);max-height:240px;overflow:auto;min-width:160px;padding:4px}
+.ss-item{padding:7px 10px;border-radius:6px;font-size:var(--fs-sm);cursor:pointer;color:var(--fg)}
+.ss-item:hover{background:color-mix(in oklab,var(--border) 45%,transparent)}
+.ss-none{color:var(--muted-fg);cursor:default}
+/* 统计日期范围分段选择 */
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:7px 13px;font-size:var(--fs-xs);color:var(--muted-fg);cursor:pointer;font-family:inherit}
+.seg button.on{background:var(--primary);color:var(--primary-fg)}
+.mitem{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);font-size:var(--fs-xs)}
+.mitem:last-child{border-bottom:none}
+.mitem:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
+.mitem input[type=checkbox]{width:15px;height:15px;accent-color:var(--primary);flex-shrink:0}
+.mitem .caps{margin-left:auto;display:flex;gap:4px;flex-shrink:0}
+.mitem .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.memtbl select{min-width:0}
+.memtbl td{padding:6px 4px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+
+<!-- ═══ 登录页 ═══ -->
+<div class="login-page" id="loginPage" style="display:none">
+  <main class="login-main">
+    <div class="login-grid">
+      <section class="login-brand">
+        <p class="login-brand-title">模型网关</p>
+        <p class="login-ver"><span>Model Gateway · v0.1.0</span></p>
+        <p class="login-sub">聚合多家上游供应商的公共模型网关，对外提供 OpenAI 兼容 API：平台模型按权重分流、按优先级故障转移。</p>
+      </section>
+      <section class="login-form-col">
+        <h1 class="login-h1">登录</h1>
+        <p class="login-form-sub">输入管理密码进入后台</p>
+        <form onsubmit="doLogin(event)">
+          <div class="form-row">
+            <label class="label" for="pw">管理密码</label>
+            <input id="pw" class="input" type="password" placeholder="••••••••" autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn login-submit" id="loginBtn">登 录</button>
+        </form>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ═══ 主界面 ═══ -->
+<div class="shell" id="shell" style="display:none">
+
+  <header class="topbar">
+    <button class="btn btn-ghost btn-icon" onclick="toggleNav()" aria-label="打开导航"><span class="ic" data-ic="menu"></span></button>
+    <span class="logo">模型网关</span>
+    <button class="btn btn-outline btn-sm" onclick="cycleTheme()"><span class="ic" id="themeIcM"></span><span id="themeLabelM">浅色</span></button>
+  </header>
+
+  <div class="side-backdrop" id="sideBackdrop" style="display:none" onclick="toggleNav()"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head"><span class="logo">模型网关</span></div>
+    <nav class="sidenav">
+      <a class="nav-link active" data-v="stats" onclick="go('stats')"><span class="ic" data-ic="dashboard"></span>统计</a>
+      <a class="nav-link" data-v="providers" onclick="go('providers')"><span class="ic" data-ic="plug"></span>供应商</a>
+      <a class="nav-link" data-v="platforms" onclick="go('platforms')"><span class="ic" data-ic="layers"></span>平台模型</a>
+      <a class="nav-link" data-v="keys" onclick="go('keys')"><span class="ic" data-ic="key"></span>密钥</a>
+      <a class="nav-link" data-v="settings" onclick="go('settings')"><span class="ic" data-ic="settings"></span>设置</a>
+    </nav>
+    <div class="side-foot">
+      <div class="side-actions">
+        <button class="btn btn-outline btn-sm" onclick="cycleTheme()"><span class="ic" id="themeIc"></span><span id="themeLabel">浅色</span></button>
+        <button class="btn btn-outline btn-sm" onclick="doLogout()"><span class="ic" data-ic="logout"></span>退出</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="content">
+    <main class="main">
+
+    <!-- 统计 -->
+    <section class="view on" id="v-stats">
+      <div class="page-head">
+        <h1>统计</h1>
+        <div class="page-actions">
+          <button class="btn btn-outline btn-sm" onclick="loadStats()"><span class="ic" data-ic="refresh"></span>刷新</button>
+          <button class="btn btn-outline btn-sm" onclick="probeAll()"><span class="ic" data-ic="activity"></span>探测全部供应商</button>
+        </div>
+      </div>
+      <div class="card" style="padding:10px 16px;margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="muted-xs">统计范围</span>
+        <div class="seg" id="statPresets">
+          <button data-p="today">今天</button><button data-p="7d" class="on">近7天</button><button data-p="30d">近30天</button><button data-p="all">全部</button>
+        </div>
+        <input type="date" id="statFrom" class="input input-sm" style="width:150px;height:30px">
+        <span class="muted-xs">至</span>
+        <input type="date" id="statTo" class="input input-sm" style="width:150px;height:30px">
+        <button class="btn btn-outline btn-sm" onclick="applyStatRange()">应用</button>
+      </div>
+      <div class="grid metrics-6" style="margin-bottom:20px" id="statCards"></div>
+      <div class="space">
+        <div class="card">
+          <div class="card-head"><h3 id="statRowsTitle">用量明细 · 按 日期 × 供应商 × 平台模型</h3></div>
+          <div id="probeResult" style="margin-bottom:12px"></div>
+          <div class="table-wrap">
+            <table id="statTable"><thead><tr><th>日期</th><th>供应商</th><th>平台模型</th><th>请求</th><th>错误</th><th>输入 tokens</th><th>输出 tokens</th><th>缓存 tokens</th><th>平均延迟</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>最近请求</h3></div>
+          <div class="table-wrap">
+            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 供应商 -->
+    <section class="view" id="v-providers">
+      <div class="page-head">
+        <h1>供应商</h1>
+        <div class="page-actions">
+          <button class="btn" onclick="openProviderModal()"><span class="ic" data-ic="plus"></span>新增供应商</button>
+        </div>
+      </div>
+      <p class="muted-xs" style="margin:-6px 0 14px">新增后点「获取模型列表」自动拉取上游可用模型，勾选导入；模型能力标注仅供参考，以勾选为准。</p>
+      <div class="card" style="padding:14px 20px">
+        <div class="table-wrap">
+          <table id="provTable"><thead><tr><th>名称</th><th>类型</th><th>Base URL</th><th>模型数</th><th>状态</th><th style="width:320px">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 平台模型 -->
+    <section class="view" id="v-platforms">
+      <div class="page-head">
+        <h1>平台模型</h1>
+        <div class="page-actions">
+          <button class="btn" onclick="openPlatformModal()"><span class="ic" data-ic="plus"></span>新增平台模型</button>
+        </div>
+      </div>
+      <p class="muted-xs" style="margin:-6px 0 14px">对外 model 名支持业务名 + 上游原名别名；成员按权重分流、按优先级故障转移，失败自动冷却摘除。</p>
+      <div class="card" style="padding:14px 20px">
+        <div class="table-wrap">
+          <table id="platTable"><thead><tr><th>对外名</th><th>别名</th><th>策略</th><th>成员</th><th>状态</th><th style="width:200px">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 密钥 -->
+    <section class="view" id="v-keys">
+      <div class="page-head">
+        <h1>API 密钥</h1>
+        <div class="page-actions">
+          <input id="keyNote" class="input input-sm" placeholder="备注（可选）" style="width:200px">
+          <button class="btn btn-sm" onclick="createKey()"><span class="ic" data-ic="plus"></span>新建密钥</button>
+        </div>
+      </div>
+      <div class="card" style="padding:14px 20px">
+        <div class="table-wrap">
+          <table id="keyTable"><thead><tr><th>密钥</th><th>备注</th><th>创建时间</th><th style="width:90px">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="v-settings">
+      <div class="page-head"><h1>设置</h1></div>
+      <div class="grid" style="grid-template-columns:1fr;gap:20px;max-width:900px">
+        <div class="card">
+          <div class="card-head"><h3>运行参数</h3></div>
+          <div class="form-row">
+            <label class="label">对话超时（秒）</label>
+            <input id="setChat" class="input input-sm" type="number">
+            <p class="field-hint">单次对话请求的最长耗时（含流式传输）。</p>
+          </div>
+          <div class="form-row">
+            <label class="label">目录拉取超时（秒）</label>
+            <input id="setModels" class="input input-sm" type="number">
+          </div>
+          <div class="form-row">
+            <label class="label">冷却基数（秒）</label>
+            <input id="setCdBase" class="input input-sm" type="number">
+            <p class="field-hint">成员失败后进入指数退避冷却：基数 × 2^(连续失败-1)，封顶冷却上限。</p>
+          </div>
+          <div class="form-row">
+            <label class="label">冷却上限（秒）</label>
+            <input id="setCdMax" class="input input-sm" type="number">
+          </div>
+          <button class="btn btn-sm" onclick="saveSettings()">保存设置</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>修改管理密码</h3></div>
+          <div class="form-row">
+            <label class="label">当前密码</label>
+            <input id="pwOld" class="input input-sm" type="password">
+          </div>
+          <div class="form-row">
+            <label class="label">新密码（至少 6 位）</label>
+            <input id="pwNew" class="input input-sm" type="password">
+          </div>
+          <button class="btn btn-sm" onclick="changePwd()">修改密码</button>
+        </div>
+      </div>
+    </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- 供应商编辑 -->
+<div class="overlay" id="mProvider" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-title" id="mProviderTitle">新增供应商</div>
+    <p class="modal-msg">OpenAI 兼容上游；Base URL 自动补 /v1。</p>
+    <div class="form-row">
+      <label class="label">名称 *</label>
+      <input id="fProvName" class="input" placeholder="如 DeepSeek / 硅基流动">
+    </div>
+    <div class="form-row">
+      <label class="label">Base URL *</label>
+      <input id="fProvURL" class="input" placeholder="https://api.deepseek.com">
+    </div>
+    <div class="form-row">
+      <label class="label">API Key（每行一个，可配多个做密钥池）</label>
+      <textarea id="fProvKeys" class="input" rows="3" placeholder="sk-aaa...&#10;sk-bbb..." style="height:auto;padding:8px 11px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px"></textarea>
+      <p class="field-hint">同一平台多个 key 自动按权重轮询分流；单 key 失败（401/403/429/5xx）自动冷却并轮换下一把。</p>
+    </div>
+    <div class="form-row">
+      <label class="label">备注</label>
+      <input id="fProvNote" class="input" placeholder="可选">
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mProvider')">取消</button>
+      <button class="btn btn-sm" onclick="saveProvider()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模型目录 -->
+<div class="overlay" id="mRemote" style="display:none">
+  <div class="modal" style="max-width:680px">
+    <div class="modal-title">上游模型目录 <span class="muted-xs" id="mRemoteProv"></span></div>
+    <p class="modal-msg">勾选要接入的模型后导入；非对话模型（嵌入 / 语音 / 绘图等）默认不勾选。</p>
+    <div class="row" style="margin-bottom:10px">
+      <button class="btn btn-outline btn-sm" onclick="selectChatModels()">全选对话模型</button>
+      <span class="spacer"></span>
+      <button class="btn btn-sm" onclick="importModels()">导入选中</button>
+    </div>
+    <div class="mlist" id="remoteList"><div style="padding:14px" class="muted-xs">加载中...</div></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mRemote')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 供应商模型列表 -->
+<div class="overlay" id="mPModels" style="display:none">
+  <div class="modal" style="max-width:680px">
+    <div class="modal-title">供应商模型 <span class="muted-xs" id="mPModelsProv"></span></div>
+    <div class="mlist" id="pmodelList" style="margin-top:12px"></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mPModels')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 供应商密钥池 -->
+<div class="overlay" id="mKeys" style="display:none">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-title">密钥池 <span class="muted-xs" id="mKeysProv"></span></div>
+    <p class="modal-msg">同平台多 key 按权重轮询分流；失败 key 自动冷却摘除，恢复后自动回归。</p>
+    <div class="row" style="margin-bottom:10px">
+      <input id="newKeyVal" class="input input-sm" placeholder="sk-..." style="flex:2;min-width:180px">
+      <input id="newKeyNote" class="input input-sm" placeholder="备注（可选）" style="flex:1;min-width:120px">
+      <button class="btn btn-sm" onclick="addProviderKey()">添加</button>
+    </div>
+    <div class="mlist" id="keyList"></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mKeys')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 平台模型编辑 -->
+<div class="overlay" id="mPlatform" style="display:none">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-title" id="mPlatformTitle">新增平台模型</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:0 12px">
+      <div class="form-row">
+        <label class="label">对外名称 *（业务名）</label>
+        <input id="fPlatName" class="input" placeholder="如 smart-fast">
+      </div>
+      <div class="form-row">
+        <label class="label">别名（逗号分隔，可留空）</label>
+        <input id="fPlatAlias" class="input" placeholder="如 Qwen3.8-Flash,deepseek-chat">
+      </div>
+      <div class="form-row">
+        <label class="label">负载策略</label>
+        <select id="fPlatStrategy" class="select select-sm">
+          <option value="sticky">sticky（会话粘性）</option>
+          <option value="round-robin">round-robin（加权轮询）</option>
+          <option value="least-inflight">least-inflight（最少并发）</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="label">黏性上限（仅 sticky：同会话连续命中同一成员的请求数，超过后重新选路，0=不限）</label>
+        <input id="fPlatSticky" class="input input-sm" type="number" value="0" min="0">
+      </div>
+      <div class="form-row">
+        <label class="label">最大重试成员数</label>
+        <input id="fPlatRetry" class="input input-sm" type="number" value="3">
+      </div>
+    </div>
+    <label class="label" style="margin-top:6px">成员列表（先选供应商再选模型，输入即可搜索；权重 = 分流比例，优先级 = 故障转移顺序，数字小者优先）</label>
+    <div class="table-wrap">
+      <table class="memtbl" id="memTable"><thead><tr><th style="width:52%">供应商 › 模型</th><th>权重</th><th>优先级</th><th>启用</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+    <div style="margin-top:10px"><button class="btn btn-outline btn-sm" onclick="addMemRow()"><span class="ic" data-ic="plus"></span>添加成员</button></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mPlatform')">取消</button>
+      <button class="btn btn-sm" onclick="savePlatform()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认弹窗 -->
+<div class="overlay" id="mConfirm" style="display:none">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-title" id="cfTitle"></div>
+    <p class="modal-msg" id="cfMsg"></p>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mConfirm')">取消</button>
+      <button class="btn btn-sm" id="cfOkBtn">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ── 图标（lucide 风格，与原版面板一致的内联 SVG） ── */
+const SVGP=(p)=>'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
+const ICONS={
+ dashboard:SVGP('<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>'),
+ plug:SVGP('<path d="M12 22v-5"/><path d="M9 8V2m6 6V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>'),
+ layers:SVGP('<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.84Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'),
+ key:SVGP('<path d="m21 2-2 2"/><path d="m15.5 7.5 3 3L22 7l-3-3"/><path d="m15.5 7.5-9.11 9.11a5.5 5.5 0 1 1-7.778-7.778z" transform="translate(1.5 1.5) scale(.92)"/>'),
+ settings:SVGP('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+ logout:SVGP('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>'),
+ sun:SVGP('<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>'),
+ moon:SVGP('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'),
+ check:SVGP('<path d="M20 6 9 17l-5-5"/>'),
+ alert:SVGP('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4m0 4h.01"/>'),
+ menu:SVGP('<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>'),
+ plus:SVGP('<path d="M5 12h14M12 5v14"/>'),
+ refresh:SVGP('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>'),
+ activity:SVGP('<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>'),
+ trash:SVGP('<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>'),
+ pencil:SVGP('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
+};
+document.querySelectorAll('[data-ic]').forEach(el=>{el.innerHTML=ICONS[el.dataset.ic]||''});
+
+/* ── 主题 ── */
+let THEME=localStorage.getItem('gw_theme')||'light';
+function applyTheme(){
+  document.documentElement.classList.toggle('dark',THEME==='dark');
+  const ic=THEME==='dark'?ICONS.moon:ICONS.sun, lb=THEME==='dark'?'深色':'浅色';
+  document.getElementById('themeIc').innerHTML=ic;document.getElementById('themeLabel').textContent=lb;
+  document.getElementById('themeIcM').innerHTML=ic;document.getElementById('themeLabelM').textContent=lb;
+}
+function cycleTheme(){THEME=THEME==='dark'?'light':'dark';localStorage.setItem('gw_theme',THEME);applyTheme()}
+applyTheme();
+
+/* ── 基础工具 ── */
+let PROVS=[],PMODS={},PLATS=[],CUR_PROV='',CUR_PM_PROV='',REMOTE=[];
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString('zh-CN',{hour12:false}):''}
+function openModal(id){document.getElementById(id).style.display='flex'}
+function closeModal(id){document.getElementById(id).style.display='none'}
+function toast(msg,err){
+  const box=document.getElementById('toasts');
+  const el=document.createElement('div');
+  el.className='toast '+(err?'toast-err':'toast-ok');
+  el.innerHTML='<span class="ic">'+(err?ICONS.alert:ICONS.check)+'</span><span>'+esc(msg)+'</span>';
+  box.appendChild(el);
+  setTimeout(()=>el.remove(),3200);
+}
+function confirmBox(title,msg,onOk){
+  document.getElementById('cfTitle').textContent=title;
+  document.getElementById('cfMsg').textContent=msg;
+  const btn=document.getElementById('cfOkBtn');
+  btn.className='btn btn-sm btn-danger';
+  btn.onclick=()=>{closeModal('mConfirm');onOk()};
+  openModal('mConfirm');
+}
+async function api(path,opts={}){
+  const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts));
+  if(r.status===401){showLogin();throw new Error('未登录')}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error&&j.error.message||('HTTP '+r.status));
+  return j;
+}
+
+/* ── 登录 ── */
+function showLogin(){document.getElementById('loginPage').style.display='flex';document.getElementById('shell').style.display='none'}
+function showApp(){document.getElementById('loginPage').style.display='none';document.getElementById('shell').style.display='block'}
+async function doLogin(ev){
+  if(ev)ev.preventDefault();
+  const btn=document.getElementById('loginBtn');
+  btn.disabled=true;btn.innerHTML='<span class="spin"></span>';
+  try{
+    await api('/admin/api/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})});
+    showApp();go('stats');
+  }catch(e){toast(e.message,true)}
+  btn.disabled=false;btn.textContent='登 录';
+}
+async function doLogout(){try{await api('/admin/api/logout',{method:'POST'})}catch(e){}showLogin()}
+function toggleNav(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sideBackdrop').style.display=document.getElementById('sidebar').classList.contains('open')?'block':'none'}
+
+function go(v){
+  document.querySelectorAll('.nav-link').forEach(a=>a.classList.toggle('active',a.dataset.v===v));
+  document.querySelectorAll('.view').forEach(p=>p.classList.toggle('on',p.id==='v-'+v));
+  if(window.innerWidth<1024){document.getElementById('sidebar').classList.remove('open');document.getElementById('sideBackdrop').style.display='none'}
+  if(v==='stats')loadStats();
+  if(v==='providers')loadProviders();
+  if(v==='platforms')loadPlatforms();
+  if(v==='keys')loadKeys();
+  if(v==='settings')loadSettings();
+}
+
+/* ── 统计 ── */
+let STATRANGE={preset:'7d',from:'',to:''};
+function fmtLocalDay(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function statQuery(){
+  if(STATRANGE.preset==='all')return'?range=all';
+  if(STATRANGE.from&&STATRANGE.to)return'?from='+STATRANGE.from+'&to='+STATRANGE.to;
+  const now=new Date();
+  if(STATRANGE.preset==='today'){const t=fmtLocalDay(now);return'?from='+t+'&to='+t}
+  const days=STATRANGE.preset==='30d'?30:7;
+  const past=new Date(now.getTime()-(days-1)*86400000);
+  return'?from='+fmtLocalDay(past)+'&to='+fmtLocalDay(now);
+}
+function setStatPreset(p){
+  STATRANGE={preset:p,from:'',to:''};
+  document.querySelectorAll('#statPresets button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));
+  document.getElementById('statFrom').value='';document.getElementById('statTo').value='';
+  loadStats();
+}
+function applyStatRange(){
+  const f=document.getElementById('statFrom').value,t=document.getElementById('statTo').value;
+  if(!f||!t){toast('请先选择起止日期',true);return}
+  if(f>t){toast('起始日期不能晚于结束日期',true);return}
+  STATRANGE={preset:'custom',from:f,to:t};
+  document.querySelectorAll('#statPresets button').forEach(b=>b.classList.remove('on'));
+  loadStats();
+}
+async function loadStats(){
+  const s=await api('/admin/api/stats'+statQuery());
+  const t=s.totals;
+  const rangeTxt=s.from&&s.to?(s.from===s.to?s.from:s.from+' ~ '+s.to):'';
+  const card=(label,val,detail)=>`<div class="metric"><div class="metric-head"><span class="metric-label">${label}</span><span class="ic">${ICONS.activity}</span></div><div class="metric-value">${val}</div><div class="metric-detail">${detail||''}</div></div>`;
+  const okReq=t.requests-t.errors;
+  const cacheRate=t.prompt_tokens>0?((t.cached_tokens||0)*100/t.prompt_tokens).toFixed(1)+'%':'—';
+  document.getElementById('statCards').innerHTML=
+    card('请求数',t.requests,rangeTxt?'范围：'+rangeTxt:'')+
+    card('错误数',t.errors,t.errors?'成功率 '+(t.requests?Math.round(okReq*100/t.requests):0)+'%':'无失败')+
+    card('输入 tokens',t.prompt_tokens,'原「提示 tokens」')+
+    card('输出 tokens',t.completion_tokens,'原「补全 tokens」')+
+    card('总 tokens',t.total_tokens!=null?t.total_tokens:(t.prompt_tokens+t.completion_tokens),'输入 + 输出')+
+    card('平均缓存率',cacheRate,'缓存命中 '+(t.cached_tokens||0)+' / 输入 '+t.prompt_tokens);
+  document.querySelector('#statTable tbody').innerHTML=(s.rows||[]).sort((a,b)=>a.day<b.day?1:-1).map(r=>`<tr>
+    <td class="muted-xs">${esc(r.day)}</td><td>${esc(r.provider_id)}</td><td>${esc(r.model)}</td><td>${r.requests}</td>
+    <td>${r.errors?`<span class="badge badge-err">${r.errors}</span>`:'<span class="badge badge-ok">0</span>'}</td>
+    <td>${r.prompt_tokens}</td><td>${r.completion_tokens}</td><td>${r.cached_tokens||0}</td>
+    <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td></tr>`).join('')
+    ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求</div></td></tr>';
+  document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
+    <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
+    <td>${esc(l.provider||'-')}</td><td>${esc(l.up_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
+    <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td></tr>`).join('')
+    ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求日志</div></td></tr>';
+}
+async function probeAll(){
+  document.getElementById('probeResult').innerHTML='<span class="muted-xs">探测中...</span>';
+  try{
+    const res=await api('/admin/api/probe',{method:'POST'});
+    document.getElementById('probeResult').innerHTML=res.map(p=>{
+      const keys=(p.keys||[]).map(k=>`<span class="badge ${k.ok?'badge-ok':'badge-err'}" title="${esc(k.key)}${k.error?'：'+esc(k.error):''}">${esc(k.key)}${k.ok?' ✓ '+k.models+'模型 '+k.latency_ms+'ms':' ✗ 失败'}</span>`).join(' ');
+      return `<div style="margin-bottom:4px"><b style="font-size:12px">${esc(p.name)}</b>　${keys||'<span class="badge badge-warn">无密钥</span>'}</div>`;
+    }).join('');
+  }catch(e){toast(e.message,true)}
+}
+
+/* ── 供应商 ── */
+async function loadProviders(){
+  PROVS=await api('/admin/api/providers');
+  document.querySelector('#provTable tbody').innerHTML=PROVS.map(p=>`<tr>
+    <td><b>${esc(p.name)}</b>${p.note?`<div class="muted-xs">${esc(p.note)}</div>`:''}</td>
+    <td><span class="badge badge-muted">${esc(p.kind)}</span></td>
+    <td class="muted-xs">${esc(p.base_url)}</td>
+    <td>${p.model_count}</td>
+    <td>${p.enabled?'<span class="badge badge-ok">启用</span>':'<span class="badge badge-muted">停用</span>'}</td>
+    <td>
+      <button class="btn btn-outline btn-sm" onclick="fetchRemote('${p.id}')">获取模型列表</button>
+      <button class="btn btn-outline btn-sm" onclick="showPModels('${p.id}')">模型 ${p.model_count}</button>
+      <button class="btn btn-outline btn-sm" onclick="showKeys('${p.id}')">密钥 ${p.key_count}</button>
+      <button class="btn btn-outline btn-sm btn-icon" title="编辑" onclick="openProviderModal('${p.id}')"><span class="ic">${ICONS.pencil}</span></button>
+      <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delProvider('${p.id}','${esc(p.name)}')"><span class="ic">${ICONS.trash}</span></button>
+    </td></tr>`).join('')
+    ||'<tr><td colspan="6"><div class="empty">还没有供应商，点右上角「新增供应商」</div></td></tr>';
+}
+function openProviderModal(id){
+  const p=PROVS.find(x=>x.id===id)||{};
+  document.getElementById('mProviderTitle').textContent=id?'编辑供应商':'新增供应商';
+  document.getElementById('fProvName').value=p.name||'';
+  document.getElementById('fProvURL').value=p.base_url||'';
+  const keys=(p.keys&&p.keys.length)?p.keys:(p.api_key?[{key:p.api_key}]:[]);
+  document.getElementById('fProvKeys').value=keys.map(k=>k.key).join('\n');
+  document.getElementById('fProvNote').value=p.note||'';
+  document.getElementById('mProvider').dataset.id=id||'';
+  openModal('mProvider');
+}
+async function saveProvider(){
+  const id=document.getElementById('mProvider').dataset.id;
+  const lines=document.getElementById('fProvKeys').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!lines.length){toast('至少需要一把 API Key',true);return}
+  const old=PROVS.find(x=>x.id===id);
+  const keys=lines.map(k=>{
+    const prev=old&&(old.keys||[]).find(x=>x.key===k);
+    return prev?{key:k,note:prev.note,weight:prev.weight,priority:prev.priority,disabled:prev.disabled}:{key:k,weight:1};
+  });
+  const body={name:document.getElementById('fProvName').value.trim(),base_url:document.getElementById('fProvURL').value.trim(),keys,note:document.getElementById('fProvNote').value.trim(),kind:'openai-compat',enabled:true};
+  if(!body.name||!body.base_url){toast('名称与 Base URL 必填',true);return}
+  try{
+    if(id){await api('/admin/api/providers/'+id,{method:'PUT',body:JSON.stringify(body)})}
+    else{await api('/admin/api/providers',{method:'POST',body:JSON.stringify(body)})}
+    closeModal('mProvider');toast('已保存');loadProviders();
+  }catch(e){toast(e.message,true)}
+}
+function delProvider(id,name){
+  confirmBox('删除供应商','确认删除「'+name+'」？其模型与平台模型成员引用将一并移除。',async()=>{
+    try{await api('/admin/api/providers/'+id,{method:'DELETE'});toast('已删除');loadProviders()}catch(e){toast(e.message,true)}
+  });
+}
+async function fetchRemote(id){
+  CUR_PROV=id;
+  const p=PROVS.find(x=>x.id===id);
+  document.getElementById('mRemoteProv').textContent='· '+(p?p.name:'');
+  document.getElementById('remoteList').innerHTML='<div style="padding:14px" class="muted-xs">拉取中...</div>';
+  openModal('mRemote');
+  try{
+    REMOTE=await api('/admin/api/providers/'+id+'/models/remote');
+    renderRemote();
+  }catch(e){document.getElementById('remoteList').innerHTML='<div style="padding:14px" class="muted-xs">拉取失败：'+esc(e.message)+'</div>'}
+}
+const CAP_LABEL={chat:'对话',tools:'工具',reasoning:'推理',vision:'视觉',other:'非对话'};
+function renderRemote(){
+  document.getElementById('remoteList').innerHTML=REMOTE.map((m,i)=>{
+    const dis=m.caps.includes('other');
+    return `<label class="mitem"><input type="checkbox" data-i="${i}" ${dis?'':(m.imported?'checked disabled':'checked')}>
+      <span class="nm">${esc(m.id)}</span>
+      ${m.imported?'<span class="badge badge-muted">已导入</span>':''}
+      <span class="caps">${m.caps.map(c=>`<span class="badge ${c==='other'?'badge-warn':'badge-muted'}">${CAP_LABEL[c]||c}</span>`).join('')}</span></label>`;
+  }).join('')||'<div style="padding:14px" class="muted-xs">上游未返回任何模型</div>';
+}
+function selectChatModels(){
+  document.querySelectorAll('#remoteList input[type=checkbox]').forEach(cb=>{
+    if(cb.disabled)return;
+    cb.checked=!REMOTE[+cb.dataset.i].caps.includes('other');
+  });
+}
+async function importModels(){
+  const ids=[];
+  document.querySelectorAll('#remoteList input[type=checkbox]:checked').forEach(cb=>{
+    const m=REMOTE[+cb.dataset.i];
+    if(m&&!m.imported)ids.push(m.id);
+  });
+  if(!ids.length){toast('没有新选中的模型',true);return}
+  try{
+    const r=await api('/admin/api/providers/'+CUR_PROV+'/models/import',{method:'POST',body:JSON.stringify({models:ids})});
+    toast('已导入 '+r.imported+' 个模型');
+    closeModal('mRemote');loadProviders();
+  }catch(e){toast(e.message,true)}
+}
+async function showPModels(id){
+  CUR_PM_PROV=id;
+  const p=PROVS.find(x=>x.id===id);
+  document.getElementById('mPModelsProv').textContent='· '+(p?p.name:'');
+  const list=await api('/admin/api/providers/'+id+'/models');
+  document.getElementById('pmodelList').innerHTML=list.map(m=>`
+    <div class="mitem">
+      <input type="checkbox" ${m.enabled?'checked':''} onchange="togglePModel('${m.id}',this.checked)">
+      <span class="nm">${esc(m.model)}</span>
+      <span class="muted-xs">${(m.caps||[]).map(c=>CAP_LABEL[c]||c).join(' / ')}</span>
+      <span class="muted-xs" style="margin-left:6px">${(m.used_by||[]).length?'用于：'+esc(m.used_by.join('、')):'未被引用'}</span>
+      <span class="caps"><button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delPModel('${m.id}')"><span class="ic">${ICONS.trash}</span></button></span>
+    </div>`).join('')||'<div style="padding:14px" class="muted-xs">尚未导入模型，请先「获取模型列表」</div>';
+  openModal('mPModels');
+}
+async function togglePModel(id,en){
+  try{await api('/admin/api/provider-models/'+id,{method:'PUT',body:JSON.stringify({enabled:en})});if(CUR_PM_PROV)showPModels(CUR_PM_PROV)}catch(e){toast(e.message,true)}
+}
+function delPModel(id){
+  confirmBox('删除供应商模型','确认删除？平台模型中的成员引用将一并移除。',async()=>{
+    try{await api('/admin/api/provider-models/'+id,{method:'DELETE'});toast('已删除');if(CUR_PM_PROV)showPModels(CUR_PM_PROV);loadProviders()}catch(e){toast(e.message,true)}
+  });
+}
+
+/* ── 供应商密钥池 ── */
+async function showKeys(id){
+  CUR_PROV=id;
+  const p=PROVS.find(x=>x.id===id);
+  document.getElementById('mKeysProv').textContent='· '+(p?p.name:'');
+  await renderKeys();
+  openModal('mKeys');
+}
+async function renderKeys(){
+  const list=await api('/admin/api/providers/'+CUR_PROV+'/keys');
+  document.getElementById('keyList').innerHTML=list.map(k=>`
+    <div class="mitem">
+      <input type="checkbox" ${k.disabled?'':'checked'} title="启用" onchange="updKey('${esc(k.key)}',{disabled:!this.checked})">
+      <span class="nm mono" title="${esc(k.key)}">${esc(k.key.length>16?k.key.slice(0,10)+'…'+k.key.slice(-4):k.key)}</span>
+      ${k.cooldown_left>0?`<span class="badge badge-warn">冷却 ${k.cooldown_left}s</span>`:''}
+      ${k.inflight>0?`<span class="badge badge-muted">并发 ${k.inflight}</span>`:''}
+      <span class="caps" style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        <input class="input input-sm" style="width:110px" value="${esc(k.note||'')}" placeholder="备注" onchange="updKey('${esc(k.key)}',{note:this.value})">
+        <input class="input input-sm" style="width:62px" type="number" min="1" value="${k.weight||1}" title="权重" onchange="updKey('${esc(k.key)}',{weight:+this.value||1})">
+        <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delProviderKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button>
+      </span>
+    </div>`).join('')||'<div style="padding:14px" class="muted-xs">尚无密钥，请在上方添加</div>';
+}
+async function addProviderKey(){
+  const key=document.getElementById('newKeyVal').value.trim();
+  if(!key){toast('请输入密钥',true);return}
+  try{
+    await api('/admin/api/providers/'+CUR_PROV+'/keys',{method:'POST',body:JSON.stringify({key,note:document.getElementById('newKeyNote').value.trim()})});
+    document.getElementById('newKeyVal').value='';document.getElementById('newKeyNote').value='';
+    toast('已添加');await renderKeys();loadProviders();
+  }catch(e){toast(e.message,true)}
+}
+async function updKey(key,patch){
+  try{
+    const list=await api('/admin/api/providers/'+CUR_PROV+'/keys');
+    const cur=list.find(x=>x.key===key)||{};
+    const body=Object.assign({},cur,patch);
+    await api('/admin/api/providers/'+CUR_PROV+'/keys/'+encodeURIComponent(key),{method:'PUT',body:JSON.stringify(body)});
+  }catch(e){toast(e.message,true)}
+}
+function delProviderKey(key){
+  confirmBox('删除密钥','确认删除该密钥？使用它的请求会自动轮换到其余密钥。',async()=>{
+    try{await api('/admin/api/providers/'+CUR_PROV+'/keys/'+encodeURIComponent(key),{method:'DELETE'});toast('已删除');await renderKeys();loadProviders()}catch(e){toast(e.message,true)}
+  });
+}
+
+/* ── 平台模型 ── */
+async function loadPlatforms(){
+  PLATS=await api('/admin/api/platform-models');
+  document.querySelector('#platTable tbody').innerHTML=PLATS.map(p=>`<tr>
+    <td><b>${esc(p.name)}</b></td>
+    <td class="muted-xs">${esc((p.aliases||[]).join('，'))}</td>
+    <td><span class="badge badge-muted">${esc(p.strategy||'sticky')}</span></td>
+    <td style="max-width:340px;white-space:normal">${(p.members_view||[]).map(m=>`<span class="badge ${m.enabled?'badge-ok':'badge-muted'}" title="权重 ${m.weight} · 优先级 ${m.priority}">${esc(m.provider_name)} / ${esc(m.model)} ×${m.weight}</span>`).join(' ')||'<span class="muted-xs">无成员</span>'}</td>
+    <td>${p.enabled?'<span class="badge badge-ok">启用</span>':'<span class="badge badge-muted">停用</span>'}</td>
+    <td>
+      <button class="btn btn-outline btn-sm btn-icon" title="编辑" onclick="openPlatformModal('${p.id}')"><span class="ic">${ICONS.pencil}</span></button>
+      <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delPlatform('${p.id}','${esc(p.name)}')"><span class="ic">${ICONS.trash}</span></button>
+    </td></tr>`).join('')
+    ||'<tr><td colspan="6"><div class="empty">还没有平台模型</div></td></tr>';
+}
+async function openPlatformModal(id){
+  PROVS=await api('/admin/api/providers');
+  PLATS=await api('/admin/api/platform-models');
+  const p=PLATS.find(x=>x.id===id)||{};
+  document.getElementById('mPlatformTitle').textContent=id?'编辑平台模型':'新增平台模型';
+  document.getElementById('fPlatName').value=p.name||'';
+  document.getElementById('fPlatAlias').value=(p.aliases||[]).join(', ');
+  document.getElementById('fPlatStrategy').value=p.strategy||'sticky';
+  document.getElementById('fPlatSticky').value=p.sticky_limit||0;
+  document.getElementById('fPlatRetry').value=p.max_retry_members||3;
+  document.getElementById('mPlatform').dataset.id=id||'';
+  // 先把所有供应商的模型拉齐，再渲染行（行内需要按 provider_model_id 反查供应商/模型名）
+  PMODS={};
+  await Promise.all(PROVS.map(async pv=>{PMODS[pv.id]=await api('/admin/api/providers/'+pv.id+'/models')}));
+  const tb=document.querySelector('#memTable tbody');
+  tb.innerHTML='';
+  let members=(p.members_view||[]).map(m=>({provider_model_id:m.provider_model_id,weight:m.weight,priority:m.priority,enabled:m.enabled}));
+  if(!members.length)members=[{provider_model_id:'',weight:1,priority:0,enabled:true}];
+  members.forEach(m=>addMemRow(m));
+  openModal('mPlatform');
+}
+function pmById(pid){
+  for(const pv of PROVS){
+    const hit=(PMODS[pv.id]||[]).find(x=>x.id===pid);
+    if(hit)return{provId:pv.id,provName:pv.name,model:hit.model};
+  }
+  return null;
+}
+function addMemRow(m){
+  m=m||{provider_model_id:'',weight:1,priority:0,enabled:true};
+  const tb=document.querySelector('#memTable tbody');
+  const tr=document.createElement('tr');
+  const info=m.provider_model_id?pmById(m.provider_model_id):null;
+  const provName=info?info.provName:'';
+  const modelName=info?info.model:'';
+  tr.innerHTML=`<td style="white-space:nowrap">
+      <input class="input input-sm mem-prov" placeholder="选择供应商" value="${esc(provName)}" autocomplete="off" style="width:150px">
+      <span class="muted-xs">›</span>
+      <input class="input input-sm mem-pm" placeholder="先选供应商" value="${esc(modelName)}" autocomplete="off" style="width:170px" ${provName?'':'disabled'}>
+    </td>
+    <td><input class="input input-sm mem-w" type="number" value="${m.weight||1}" min="1" style="width:64px"></td>
+    <td><input class="input input-sm mem-pr" type="number" value="${m.priority||0}" style="width:64px"></td>
+    <td><input class="mem-en" type="checkbox" ${m.enabled?'checked':''} style="width:15px;height:15px;accent-color:var(--primary)"></td>
+    <td><button class="btn btn-danger btn-sm btn-icon" title="移除" onclick="this.closest('tr').remove()"><span class="ic">${ICONS.trash}</span></button></td>`;
+  tb.appendChild(tr);
+  if(info)tr.dataset.prov=info.provId;
+  const provInput=tr.querySelector('.mem-prov'),pmInput=tr.querySelector('.mem-pm');
+  // 供应商：可搜索下拉；真正切换供应商时清空模型并记录到行上
+  bindSearchSelect(provInput,()=>PROVS.map(x=>x.name),name=>{
+    const pv=PROVS.find(x=>x.name===name);
+    if(!pv)return;
+    if(tr.dataset.prov!==pv.id){pmInput.value='';tr.dataset.prov=pv.id}
+    pmInput.disabled=false;
+  });
+  // 模型：候选来自当前行已选供应商；未选供应商前禁用
+  bindSearchSelect(pmInput,()=>(PMODS[tr.dataset.prov]||[]).map(x=>x.model),null);
+}
+async function savePlatform(){
+  const id=document.getElementById('mPlatform').dataset.id;
+  const name=document.getElementById('fPlatName').value.trim();
+  if(!name){toast('对外名称必填',true);return}
+  const aliases=document.getElementById('fPlatAlias').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const members=[];
+  let bad=false;
+  document.querySelectorAll('#memTable tbody tr').forEach(tr=>{
+    const pname=tr.querySelector('.mem-prov').value.trim();
+    const mname=tr.querySelector('.mem-pm').value.trim();
+    if(!pname&&!mname)return; // 空行跳过
+    const pv=PROVS.find(x=>x.name===pname);
+    const pm=pv?(PMODS[pv.id]||[]).find(x=>x.model===mname):null;
+    if(!pm){bad=true;tr.querySelector('.mem-pm').style.borderColor='var(--danger, #d33)';return}
+    members.push({provider_model_id:pm.id,weight:+tr.querySelector('.mem-w').value||1,priority:+tr.querySelector('.mem-pr').value||0,enabled:tr.querySelector('.mem-en').checked});
+  });
+  if(bad){toast('有成员未匹配到「供应商 + 模型」，请补全后再保存',true);return}
+  if(!members.length){toast('至少需要一个成员',true);return}
+  const body={name,aliases,strategy:document.getElementById('fPlatStrategy').value,sticky_limit:+document.getElementById('fPlatSticky').value||0,max_retry_members:+document.getElementById('fPlatRetry').value||3,enabled:true,members};
+  try{
+    if(id){await api('/admin/api/platform-models/'+id,{method:'PUT',body:JSON.stringify(body)})}
+    else{await api('/admin/api/platform-models',{method:'POST',body:JSON.stringify(body)})}
+    closeModal('mPlatform');toast('已保存');loadPlatforms();
+  }catch(e){toast(e.message,true)}
+}
+function delPlatform(id,name){
+  confirmBox('删除平台模型','确认删除「'+name+'」？调用方将无法再使用该模型名。',async()=>{
+    try{await api('/admin/api/platform-models/'+id,{method:'DELETE'});toast('已删除');loadPlatforms()}catch(e){toast(e.message,true)}
+  });
+}
+
+/* ── 密钥 ── */
+async function loadKeys(){
+  const keys=await api('/admin/api/keys');
+  document.querySelector('#keyTable tbody').innerHTML=keys.map(k=>`<tr>
+    <td><span class="key-chip mono">${esc(k.key)}</span></td>
+    <td>${esc(k.note||'-')}</td>
+    <td class="muted-xs">${fmtTime(k.created_at)}</td>
+    <td><button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button></td></tr>`).join('')
+    ||'<tr><td colspan="4"><div class="empty">暂无密钥</div></td></tr>';
+}
+async function createKey(){
+  const note=document.getElementById('keyNote').value.trim();
+  try{const k=await api('/admin/api/keys',{method:'POST',body:JSON.stringify({note})});toast('已创建：'+k.key);document.getElementById('keyNote').value='';loadKeys()}catch(e){toast(e.message,true)}
+}
+function delKey(key){
+  confirmBox('删除密钥','确认删除 '+key.slice(0,10)+'… ？使用该密钥的调用将立即失效。',async()=>{
+    try{await api('/admin/api/keys/'+key,{method:'DELETE'});toast('已删除');loadKeys()}catch(e){toast(e.message,true)}
+  });
+}
+
+/* ── 设置 ── */
+async function loadSettings(){
+  const s=await api('/admin/api/settings');
+  document.getElementById('setChat').value=s.chat_timeout_seconds;
+  document.getElementById('setModels').value=s.models_timeout_seconds;
+  document.getElementById('setCdBase').value=s.cooldown_base_seconds;
+  document.getElementById('setCdMax').value=s.cooldown_max_seconds;
+}
+async function saveSettings(){
+  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value};
+  try{await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});toast('已保存')}catch(e){toast(e.message,true)}
+}
+async function changePwd(){
+  const body={current_password:document.getElementById('pwOld').value,new_password:document.getElementById('pwNew').value};
+  try{await api('/admin/api/password',{method:'POST',body:JSON.stringify(body)});toast('密码已修改');document.getElementById('pwOld').value='';document.getElementById('pwNew').value=''}catch(e){toast(e.message,true)}
+}
+
+/* ── 自定义可搜索下拉（与面板同风格，替代原生 datalist） ── */
+const SSSTATE={input:null,onPick:null};
+function ssOpen(input,items,onPick){
+  SSSTATE.input=input;SSSTATE.onPick=onPick||null;
+  const list=document.getElementById('ssList');
+  const q=input.value.trim().toLowerCase();
+  const hits=items.filter(x=>!q||x.toLowerCase().includes(q));
+  const r=input.getBoundingClientRect();
+  list.style.left=Math.max(8,Math.round(r.left))+'px';
+  list.style.top=Math.round(r.bottom+4)+'px';
+  list.style.width=Math.max(Math.round(r.width),170)+'px';
+  list.innerHTML=hits.length?hits.map(x=>`<div class="ss-item">${esc(x)}</div>`).join(''):'<div class="ss-item ss-none">无匹配项</div>';
+  list.style.display='block';
+  list.querySelectorAll('.ss-item:not(.ss-none)').forEach(el=>{
+    el.addEventListener('mousedown',ev=>{ev.preventDefault();
+      input.value=el.textContent;
+      ssClose();
+      if(SSSTATE.onPick)SSSTATE.onPick(el.textContent);
+    });
+  });
+}
+function ssClose(){
+  const l=document.getElementById('ssList');
+  if(l)l.style.display='none';
+  SSSTATE.input=null;SSSTATE.onPick=null;
+}
+document.addEventListener('mousedown',e=>{
+  const l=document.getElementById('ssList');
+  if(l&&l.style.display==='block'&&SSSTATE.input&&!l.contains(e.target)&&e.target!==SSSTATE.input)ssClose();
+});
+document.addEventListener('scroll',()=>ssClose(),true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')ssClose()});
+// bindSearchSelect：把任意输入框变成可搜索下拉。
+// getItems() 每次打开时取候选；onPick(text) 选中后回调。
+function bindSearchSelect(input,getItems,onPick){
+  input.addEventListener('focus',()=>ssOpen(input,getItems(),onPick));
+  input.addEventListener('input',()=>ssOpen(input,getItems(),onPick));
+  input.addEventListener('blur',()=>setTimeout(()=>{if(SSSTATE.input===input)ssClose()},150));
+}
+
+/* ── 启动 ── */
+(async function init(){
+  try{await api('/admin/api/auth');showApp();go('stats')}catch(e){showLogin()}
+})();
+</script>
+<div class="ss-list" id="ssList"></div>
+</body>
+</html>

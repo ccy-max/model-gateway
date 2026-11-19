@@ -1,0 +1,24 @@
+# 公共模型网关独立镜像（多阶段构建，产出 cmd/gateway）
+# 构建：docker build -f Dockerfile.gateway -t model-gateway:latest .
+#   可选：--build-arg VERSION=x.y.z（版本号注入面板/日志）
+#         --build-arg GOPROXY_URL=https://proxy.golang.org,direct（CI 用官方源；国内本地构建默认 goproxy.cn）
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+ARG VERSION=0.1.0
+ARG GOPROXY_URL=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY_URL}
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/model-gateway ./cmd/gateway
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 gateway \
+    && mkdir -p /app/data && chown -R gateway:gateway /app
+COPY --from=build /out/model-gateway /app/model-gateway
+WORKDIR /app
+USER gateway
+EXPOSE 8080
+VOLUME ["/app/data"]
+ENTRYPOINT ["/app/model-gateway"]

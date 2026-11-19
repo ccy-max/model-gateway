@@ -1,0 +1,42 @@
+# 公共模型网关 —— 独立容器 + 独立数据卷
+# 注意：本文件与 qoder2api 的 compose 属于不同 compose 项目，互不影响。
+# 现有 qoder2api(:2323/:2324) 容器、镜像、数据卷均保持原样不动。
+#
+# 网络：标准桥接，端口映射 2325:8080（面板可见）。
+# 上游 Qoder 服务经 docker 内部网络直连容器名 qoder2api:10081，
+# 不经过宿主 IP（部分环境的防火墙会拦容器→宿主IP 流量）。
+services:
+  model-gateway:
+    image: model-gateway:latest
+    container_name: model-gateway
+    restart: unless-stopped
+    ports:
+      - "2325:8080"
+    environment:
+      - GW_PORT=8080
+      - GW_DATA_PATH=/app/data/data.json
+      # 首启播种（仅空配置时生效，之后以数据卷内配置为准）
+      # 敏感值从同目录 .env 注入（.env 不入库，见根 .gitignore）
+      - GW_ADMIN_PASSWORD=${GW_ADMIN_PASSWORD}
+      - GW_API_KEY=${GW_API_KEY}
+      - GW_UPSTREAM_QODER_URL=http://qoder2api:10081/v1
+      - GW_UPSTREAM_QODER_KEY=${GW_UPSTREAM_QODER_KEY}
+    volumes:
+      - model-gateway-data:/app/data
+    networks:
+      - qoder-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  qoder-net:
+    external: true
+    name: qoder2api_default
+
+volumes:
+  model-gateway-data:
+    name: model-gateway-data
