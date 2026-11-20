@@ -720,6 +720,14 @@ applyTheme();
 let PROVS=[],PMODS={},PLATS=[],CUR_PROV='',CUR_PM_PROV='',REMOTE=[];
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString('zh-CN',{hour12:false}):''}
+// 大数单位自动转换：≥1亿 → X.XX 亿；≥1万 → X.X 万；其余原样
+function fmtNum(n){
+  n=Number(n)||0;
+  const abs=Math.abs(n);
+  if(abs>=1e8)return (n/1e8).toFixed(2)+' 亿';
+  if(abs>=1e4)return (n/1e4).toFixed(1)+' 万';
+  return String(n);
+}
 function openModal(id){document.getElementById(id).style.display='flex'}
 function closeModal(id){document.getElementById(id).style.display='none'}
 function toast(msg,err){
@@ -813,20 +821,20 @@ async function loadStats(){
   if(tick)tick.textContent='10s 自动刷新 · 更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   const t=s.totals;
   const rangeTxt=s.from&&s.to?(s.from===s.to?s.from:s.from+' ~ '+s.to):'';
-  const card=(label,val,detail)=>`<div class="metric"><div class="metric-head"><span class="metric-label">${label}</span><span class="ic">${ICONS.activity}</span></div><div class="metric-value">${val}</div><div class="metric-detail">${detail||''}</div></div>`;
+  const card=(label,val,detail,title)=>`<div class="metric"><div class="metric-head"><span class="metric-label">${label}</span><span class="ic">${ICONS.activity}</span></div><div class="metric-value"${title?` title="${esc(title)}"`:''}>${val}</div><div class="metric-detail">${detail||''}</div></div>`;
   const okReq=t.requests-t.errors;
   const cacheRate=t.prompt_tokens>0?((t.cached_tokens||0)*100/t.prompt_tokens).toFixed(1)+'%':'—';
   document.getElementById('statCards').innerHTML=
     card('请求数',t.requests,rangeTxt?'范围：'+rangeTxt:'')+
     card('错误数',t.errors,t.errors?'成功率 '+(t.requests?Math.round(okReq*100/t.requests):0)+'%':'无失败')+
-    card('输入 tokens',t.prompt_tokens,'原「提示 tokens」')+
-    card('输出 tokens',t.completion_tokens,'原「补全 tokens」')+
-    card('总 tokens',t.total_tokens!=null?t.total_tokens:(t.prompt_tokens+t.completion_tokens),'输入 + 输出')+
-    card('平均缓存率',cacheRate,'缓存命中 '+(t.cached_tokens||0)+' / 输入 '+t.prompt_tokens);
+    card('输入 tokens',fmtNum(t.prompt_tokens),'原「提示 tokens」',t.prompt_tokens)+
+    card('输出 tokens',fmtNum(t.completion_tokens),'原「补全 tokens」',t.completion_tokens)+
+    card('总 tokens',fmtNum(t.total_tokens!=null?t.total_tokens:(t.prompt_tokens+t.completion_tokens)),'输入 + 输出',t.total_tokens!=null?t.total_tokens:(t.prompt_tokens+t.completion_tokens))+
+    card('平均缓存率',cacheRate,'缓存命中 '+fmtNum(t.cached_tokens||0)+' / 输入 '+fmtNum(t.prompt_tokens));
   document.querySelector('#statTable tbody').innerHTML=(s.rows||[]).sort((a,b)=>a.day<b.day?1:-1).map(r=>`<tr>
     <td class="muted-xs">${esc(r.day)}</td><td>${esc(r.provider_id)}</td><td>${esc(r.model)}</td><td>${r.requests}</td>
     <td>${r.errors?`<span class="badge badge-err">${r.errors}</span>`:'<span class="badge badge-ok">0</span>'}</td>
-    <td>${r.prompt_tokens}</td><td>${r.completion_tokens}</td><td>${r.cached_tokens||0}</td>
+    <td title="${r.prompt_tokens}">${fmtNum(r.prompt_tokens)}</td><td title="${r.completion_tokens}">${fmtNum(r.completion_tokens)}</td><td title="${r.cached_tokens||0}">${fmtNum(r.cached_tokens||0)}</td>
     <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td></tr>`).join('')
     ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求</div></td></tr>';
   document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
