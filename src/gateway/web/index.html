@@ -259,11 +259,11 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
     <div class="side-head"><span class="logo">模型网关</span></div>
     <nav class="sidenav">
       <a class="nav-link active" data-v="stats" onclick="go('stats')"><span class="ic" data-ic="dashboard"></span>统计</a>
-      <a class="nav-link" data-v="logs" onclick="go('logs')"><span class="ic" data-ic="list"></span>日志</a>
       <a class="nav-link" data-v="providers" onclick="go('providers')"><span class="ic" data-ic="plug"></span>供应商</a>
       <a class="nav-link" data-v="platforms" onclick="go('platforms')"><span class="ic" data-ic="layers"></span>平台模型</a>
       <a class="nav-link" data-v="keys" onclick="go('keys')"><span class="ic" data-ic="key"></span>密钥</a>
       <a class="nav-link" data-v="settings" onclick="go('settings')"><span class="ic" data-ic="settings"></span>设置</a>
+      <a class="nav-link" data-v="logs" onclick="go('logs')"><span class="ic" data-ic="list"></span>日志</a>
       <a class="nav-link" data-v="guide" onclick="go('guide')"><span class="ic" data-ic="book"></span>使用指引</a>
     </nav>
     <div class="side-foot">
@@ -319,12 +319,14 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <div class="page-head">
         <h1>请求日志</h1>
         <div class="page-actions">
-          <select id="logLimit" class="select select-sm" onchange="loadLogs()">
-            <option value="50">最近 50 条</option>
-            <option value="100" selected>最近 100 条</option>
-            <option value="300">最近 300 条</option>
-            <option value="500">最近 500 条</option>
+          <select id="logSize" class="select select-sm" onchange="logGoPage(1)">
+            <option value="20">每页 20 条</option>
+            <option value="50" selected>每页 50 条</option>
+            <option value="100">每页 100 条</option>
           </select>
+          <button class="btn btn-outline btn-sm" id="logPrev" onclick="logGoPage(LOGPAGE.page-1)">上一页</button>
+          <span class="muted-xs" id="logPager">第 1 页</span>
+          <button class="btn btn-outline btn-sm" id="logNext" onclick="logGoPage(LOGPAGE.page+1)">下一页</button>
           <button class="btn btn-outline btn-sm" onclick="loadLogs()"><span class="ic" data-ic="refresh"></span>刷新</button>
         </div>
       </div>
@@ -415,6 +417,11 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
               <option value="1">开启（额外记录报文，供排查）</option>
             </select>
             <p class="field-hint">开启后「日志」页每条记录可点「详情」查看客户端请求、上游请求与上游响应报文（各截断保存）。日志体积会明显增大，排查完建议关闭。</p>
+          </div>
+          <div class="form-row">
+            <label class="label">日志保存天数</label>
+            <input id="setLogDays" class="input input-sm" type="number" min="1" max="3650" style="width:140px">
+            <p class="field-hint">请求日志（含调试报文）超过该天数自动清理，默认 30 天；每日统计固定保留 90 天。</p>
           </div>
           <button class="btn btn-sm" onclick="saveSettings()">保存设置</button>
         </div>
@@ -1139,9 +1146,10 @@ async function loadSettings(){
   document.getElementById('setCdBase').value=s.cooldown_base_seconds;
   document.getElementById('setCdMax').value=s.cooldown_max_seconds;
   document.getElementById('setDebug').value=s.debug_payloads?'1':'0';
+  document.getElementById('setLogDays').value=s.log_retention_days||30;
 }
 async function saveSettings(){
-  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,debug_payloads:document.getElementById('setDebug').value==='1'};
+  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,debug_payloads:document.getElementById('setDebug').value==='1',log_retention_days:+document.getElementById('setLogDays').value||30};
   try{await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});toast('已保存')}catch(e){toast(e.message,true)}
 }
 async function changePwd(){
@@ -1190,12 +1198,22 @@ function bindSearchSelect(input,getItems,onPick){
 }
 
 /* ── 请求日志 ── */
-let LOGROWS=[];
+let LOGROWS=[],LOGPAGE={page:1,size:50,total:0};
+function logGoPage(p){
+  const pages=Math.max(1,Math.ceil(LOGPAGE.total/LOGPAGE.size));
+  LOGPAGE.page=Math.min(Math.max(1,p),pages);
+  loadLogs();
+}
 async function loadLogs(){
-  const limit=+document.getElementById('logLimit').value||100;
   try{
-    const d=await api('/admin/api/logs?limit='+limit);
+    const d=await api('/admin/api/logs?page='+LOGPAGE.page+'&page_size='+LOGPAGE.size);
     LOGROWS=d.logs||[];
+    LOGPAGE.total=d.total||0;
+    const pages=Math.max(1,Math.ceil(LOGPAGE.total/LOGPAGE.size));
+    if(LOGPAGE.page>pages){LOGPAGE.page=pages}
+    document.getElementById('logPager').textContent='第 '+LOGPAGE.page+' / '+pages+' 页 · 共 '+LOGPAGE.total+' 条';
+    document.getElementById('logPrev').disabled=LOGPAGE.page<=1;
+    document.getElementById('logNext').disabled=LOGPAGE.page>=pages;
     document.querySelector('#logsTable tbody').innerHTML=LOGROWS.map((l,i)=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
     <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>

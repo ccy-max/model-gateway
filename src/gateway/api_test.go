@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -841,7 +842,7 @@ func TestLogsAndDebugPayload(t *testing.T) {
 	resp.Body.Close()
 
 	// 查日志
-	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/logs?limit=10", nil)
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/logs?page=1&page_size=10", nil)
 	req.AddCookie(cookie)
 	resp, err = client.Do(req)
 	if err != nil {
@@ -879,5 +880,92 @@ func TestLogsAndDebugPayload(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a smart-model log with debug payload, got %+v", out.Logs)
+	}
+}
+
+func TestLogsPaginationAndRetention(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	seedTwoProviders(s, up.URL, up.URL)
+	// 直接写入 25 条日志
+	now := time.Now().Unix()
+	for i := 0; i < 25; i++ {
+		s.db.InsertLog(RequestLog{Time: now - int64(i), Model: "m" + strconv.Itoa(i), UpModel: "up-" + strconv.Itoa(i)})
+	}
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+	client := &http.Client{}
+
+	// 登录
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := resp.Cookies()[0]
+	resp.Body.Close()
+
+	get := func(q string) (int, int64, int, []RequestLog) {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/admin/api/logs?"+q, nil)
+		req.AddCookie(cookie)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Logs     []RequestLog `json:"logs"`
+			Total    int64        `json:"total"`
+			Page     int          `json:"page"`
+			PageSize int          `json:"page_size"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Page, out.Total, out.PageSize, out.Logs
+	}
+
+	page, total, size, logs := get("page=2&page_size=10")
+	if page != 2 || total != 25 || size != 10 || len(logs) != 10 {
+		t.Fatalf("page=2 unexpected: page=%d total=%d size=%d len=%d", page, total, size, len(logs))
+	}
+	if logs[0].Model != "m10" {
+		t.Fatalf("page2 first should be m10, got %s", logs[0].Model)
+	}
+	_, _, _, logs = get("page=3&page_size=10")
+	if len(logs) != 5 {
+		t.Fatalf("page3 expect 5 rows, got %d", len(logs))
+	}
+	// 越界页 → 服务端收敛到最后一页
+	page, _, _, logs = get("page=9&page_size=10")
+	if page != 3 || len(logs) != 5 {
+		t.Fatalf("overflow page should clamp to 3 with 5 rows, got page=%d len=%d", page, len(logs))
+	}
+
+	// 日志保存天数设置：写入并回读
+	req, _ = http.NewRequest(http.MethodPut, ts.URL+"/admin/api/settings",
+		strings.NewReader(`{"chat_timeout_seconds":30,"log_retention_days":7}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/settings", nil)
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st2 struct {
+		LogRetentionDays int `json:"log_retention_days"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st2)
+	resp.Body.Close()
+	if st2.LogRetentionDays != 7 {
+		t.Fatalf("log_retention_days expect 7, got %d", st2.LogRetentionDays)
 	}
 }

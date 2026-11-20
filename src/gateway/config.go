@@ -111,7 +111,8 @@ type Settings struct {
 	ModelsTimeoutSec int  `json:"models_timeout_seconds"`
 	CooldownBaseSec  int  `json:"cooldown_base_seconds"`
 	CooldownMaxSec   int  `json:"cooldown_max_seconds"`
-	DebugPayloads    bool `json:"debug_payloads"` // 开启后请求日志额外记录请求/响应报文
+	DebugPayloads    bool `json:"debug_payloads"`     // 开启后请求日志额外记录请求/响应报文
+	LogRetentionDays int  `json:"log_retention_days"` // 请求日志保留天数（<=0 视为 30）
 }
 
 // DailyStat 单日按 供应商×平台模型 聚合的用量（含失败尝试）。

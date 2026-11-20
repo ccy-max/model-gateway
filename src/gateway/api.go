@@ -59,7 +59,24 @@ func NewServer(store *Store, version string) *Server {
 	s.db = db
 	db.MigrateJSONL(dataDir)
 	db.MigrateConfigStats(store)
-	go db.CleanupLoop(30, 90) // 日志留 30 天，统计留 90 天
+	// 日志按设置保留天数清理（默认 30 天，每小时巡一次）；统计固定留 90 天
+	go func() {
+		retention := func() int {
+			days := 0
+			store.View(func(c *Config) { days = c.Settings.LogRetentionDays })
+			if days <= 0 {
+				days = 30
+			}
+			if days > 3650 {
+				days = 3650
+			}
+			return days
+		}
+		db.Cleanup(retention(), 90)
+		for range time.Tick(time.Hour) {
+			db.Cleanup(retention(), 90)
+		}
+	}()
 	return s
 }
 
@@ -1436,7 +1453,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	fromTs := dayStartUnix(from)
 	toTs := dayStartUnix(to) + 86400 - 1 // 当天 23:59:59
-	logs := s.db.QueryLogs(fromTs, toTs, 300)
+	logs := s.db.QueryLogs(fromTs, toTs, 20) // 最近请求只展示 20 条
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from": from, "to": to, "rows": rows,
 		"totals": map[string]any{"requests": reqs, "errors": errs, "prompt_tokens": ptok, "completion_tokens": ctok, "cached_tokens": cktok, "total_tokens": ptok + ctok},
@@ -1500,16 +1517,29 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleLogs 最近请求日志（独立于统计的日期过滤，直接取最新 N 条）。
+// handleLogs 请求日志，分页返回（新→旧）。参数：page（从 1 起）、page_size（默认 50，上限 200）。
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		limit = v
+	page := 1
+	if v, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && v > 0 {
+		page = v
 	}
-	if limit > 500 {
-		limit = 500
+	size := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil && v > 0 {
+		size = v
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"logs": s.db.QueryLogsRecent(limit)})
+	if size > 200 {
+		size = 200
+	}
+	total := s.db.CountLogs()
+	pages := (total + int64(size) - 1) / int64(size)
+	if pages < 1 {
+		pages = 1
+	}
+	if int64(page) > pages {
+		page = int(pages)
+	}
+	logs := s.db.QueryLogsPaged(size, (page-1)*size)
+	writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "total": total, "page": page, "page_size": size})
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -1539,6 +1569,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			// 布尔值直接赋值：面板每次都会带上完整设置
 			c.Settings.DebugPayloads = body.DebugPayloads
+			if body.LogRetentionDays > 0 {
+				days := body.LogRetentionDays
+				if days > 3650 {
+					days = 3650
+				}
+				c.Settings.LogRetentionDays = days
+			}
 		})
 		s.invalidateUpstreams()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

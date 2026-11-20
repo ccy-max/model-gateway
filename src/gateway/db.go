@@ -182,9 +182,28 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 
 // QueryLogsRecent 取最新 limit 条日志（新→旧），供「日志」页使用。
 func (d *DB) QueryLogsRecent(limit int) []RequestLog {
-	out := []RequestLog{}
-	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
 FROM request_logs ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+}
+
+// QueryLogsPaged 分页取日志（新→旧）：limit 每页条数，offset 偏移。
+func (d *DB) QueryLogsPaged(limit, offset int) []RequestLog {
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+FROM request_logs ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, limit, offset)
+}
+
+// CountLogs 日志总条数（分页用）。
+func (d *DB) CountLogs() int64 {
+	var n int64
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+func (d *DB) queryLogsOrdered(query string, args ...any) []RequestLog {
+	out := []RequestLog{}
+	rs, err := d.db.Query(query, args...)
 	if err != nil {
 		log.Printf("[db] 查日志失败: %v", err)
 		return out
@@ -210,14 +229,6 @@ func (d *DB) Cleanup(logDays, statDays int) {
 	dayCutoff := time.Now().AddDate(0, 0, -statDays).Format("2006-01-02")
 	if _, err := d.db.Exec(`DELETE FROM daily_stats WHERE day < ?`, dayCutoff); err != nil {
 		log.Printf("[db] 清理统计失败: %v", err)
-	}
-}
-
-// CleanupLoop 每小时清理一次（阻塞，建议 goroutine 调用）。
-func (d *DB) CleanupLoop(logDays, statDays int) {
-	d.Cleanup(logDays, statDays)
-	for range time.Tick(time.Hour) {
-		d.Cleanup(logDays, statDays)
 	}
 }
 
