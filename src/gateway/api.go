@@ -755,7 +755,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency int64, prompt, compl, cached int64, isErr bool, errMsg, debug string) {
 	rec := RequestLog{
 		Time: time.Now().Unix(), KeyNote: keyNote, Model: platformName,
-		Provider: prov.Name, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
+		Provider: prov.Name, ProviderID: prov.ID, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
 		Latency: latency, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
 	}
 	s.db.InsertLog(rec)
@@ -1450,6 +1450,62 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, reqs, errs, ptok, ctok, cktok := s.db.QueryStats(from, to)
+	// 明细里的供应商展示为名称（库里存的是 ID）；旧日志无 ID 时按平台模型唯一成员反查
+	nameByID := map[string]string{}
+	modelToProv := map[string]string{}
+	s.store.View(func(c *Config) {
+		for _, p := range c.Providers {
+			nameByID[p.ID] = p.Name
+		}
+		pmodOwner := map[string]string{}
+		for _, pmod := range c.ProviderModels {
+			if n := nameByID[pmod.ProviderID]; n != "" {
+				pmodOwner[pmod.ID] = n
+			}
+		}
+		for _, pm := range c.PlatformModels {
+			set := map[string]bool{}
+			for _, m := range pm.Members {
+				if n := pmodOwner[m.ProviderModelID]; n != "" {
+					set[n] = true
+				}
+			}
+			if len(set) == 1 {
+				for n := range set {
+					modelToProv[pm.Name] = n
+				}
+			}
+		}
+	})
+	for i := range rows {
+		if n, ok := nameByID[rows[i].ProviderID]; ok && n != "" {
+			rows[i].ProviderID = n
+			continue
+		}
+		if rows[i].ProviderID == "" {
+			if n, ok := modelToProv[rows[i].Model]; ok {
+				rows[i].ProviderID = n
+			}
+		}
+	}
+	// 同 日+供应商+模型 合并（历史日志无 provider_id，会与迁移后的新日志拆成两行）
+	merged := make([]DailyStat, 0, len(rows))
+	rowIdx := map[string]int{}
+	for _, r := range rows {
+		k := r.Day + "|" + r.ProviderID + "|" + r.Model
+		if i, ok := rowIdx[k]; ok {
+			merged[i].Requests += r.Requests
+			merged[i].Errors += r.Errors
+			merged[i].PromptTok += r.PromptTok
+			merged[i].ComplTok += r.ComplTok
+			merged[i].CachedTok += r.CachedTok
+			merged[i].LatencySum += r.LatencySum
+			continue
+		}
+		rowIdx[k] = len(merged)
+		merged = append(merged, r)
+	}
+	rows = merged
 
 	fromTs := dayStartUnix(from)
 	toTs := dayStartUnix(to) + 86400 - 1 // 当天 23:59:59

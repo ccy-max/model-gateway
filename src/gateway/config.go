@@ -130,12 +130,13 @@ type DailyStat struct {
 
 // RequestLog 单次请求日志。
 type RequestLog struct {
-	Time      int64  `json:"time"`
-	KeyNote   string `json:"key_note,omitempty"`
-	Model     string `json:"model"`
-	Provider  string `json:"provider,omitempty"`
-	UpModel   string `json:"upstream_model,omitempty"`
-	UpKey     string `json:"upstream_key,omitempty"`
+	Time       int64  `json:"time"`
+	KeyNote    string `json:"key_note,omitempty"`
+	Model      string `json:"model"`
+	Provider   string `json:"provider,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
+	UpModel    string `json:"upstream_model,omitempty"`
+	UpKey      string `json:"upstream_key,omitempty"`
 	Status    int    `json:"status"`
 	Latency   int64  `json:"latency_ms"`
 	Stream    bool   `json:"stream"`

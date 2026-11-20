@@ -969,3 +969,69 @@ func TestLogsPaginationAndRetention(t *testing.T) {
 		t.Fatalf("log_retention_days expect 7, got %d", st2.LogRetentionDays)
 	}
 }
+
+func TestStatsErrorAccounting(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	seedTwoProviders(s, up.URL, up.URL)
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+	client := &http.Client{}
+
+	// 两次成功对话
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	// 直接记一次失败尝试（另一供应商维度）
+	s.db.UpsertStat(time.Now().Format("2006-01-02"), "p_fail", "fail-model", true, 0, 0, 0, 10)
+
+	// 登录查统计
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := resp.Cookies()[0]
+	resp.Body.Close()
+
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/stats", nil)
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Totals struct {
+			Requests int64 `json:"requests"`
+			Errors   int64 `json:"errors"`
+		} `json:"totals"`
+		Rows []struct {
+			ProviderID string `json:"provider_id"`
+			Requests   int64  `json:"requests"`
+			Errors     int64  `json:"errors"`
+		} `json:"rows"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Totals.Requests != 3 || out.Totals.Errors != 1 {
+		t.Fatalf("expect requests=3 errors=1, got %+v", out.Totals)
+	}
+	for _, r := range out.Rows {
+		if r.Errors > r.Requests {
+			t.Fatalf("errors must never exceed requests, got %+v", r)
+		}
+	}
+}

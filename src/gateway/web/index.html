@@ -282,6 +282,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <div class="page-head">
         <h1>统计</h1>
         <div class="page-actions">
+          <span class="muted-xs" id="statTick"></span>
           <button class="btn btn-outline btn-sm" onclick="loadStats()"><span class="ic" data-ic="refresh"></span>刷新</button>
           <button class="btn btn-outline btn-sm" onclick="probeAll()"><span class="ic" data-ic="activity"></span>探测全部供应商</button>
         </div>
@@ -762,6 +763,7 @@ async function doLogout(){try{await api('/admin/api/logout',{method:'POST'})}cat
 function toggleNav(){document.getElementById('sidebar').classList.toggle('open');document.getElementById('sideBackdrop').style.display=document.getElementById('sidebar').classList.contains('open')?'block':'none'}
 
 function go(v){
+  CURVIEW=v;
   document.querySelectorAll('.nav-link').forEach(a=>a.classList.toggle('active',a.dataset.v===v));
   document.querySelectorAll('.view').forEach(p=>p.classList.toggle('on',p.id==='v-'+v));
   if(window.innerWidth<1024){document.getElementById('sidebar').classList.remove('open');document.getElementById('sideBackdrop').style.display='none'}
@@ -786,6 +788,11 @@ function statQuery(){
   const past=new Date(now.getTime()-(days-1)*86400000);
   return'?from='+fmtLocalDay(past)+'&to='+fmtLocalDay(now);
 }
+let CURVIEW='stats';
+document.getElementById('statPresets').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-p]');
+  if(b)setStatPreset(b.dataset.p);
+});
 function setStatPreset(p){
   STATRANGE={preset:p,from:'',to:''};
   document.querySelectorAll('#statPresets button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));
@@ -802,6 +809,8 @@ function applyStatRange(){
 }
 async function loadStats(){
   const s=await api('/admin/api/stats'+statQuery());
+  const tick=document.getElementById('statTick');
+  if(tick)tick.textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   const t=s.totals;
   const rangeTxt=s.from&&s.to?(s.from===s.to?s.from:s.from+' ~ '+s.to):'';
   const card=(label,val,detail)=>`<div class="metric"><div class="metric-head"><span class="metric-label">${label}</span><span class="ic">${ICONS.activity}</span></div><div class="metric-value">${val}</div><div class="metric-detail">${detail||''}</div></div>`;
@@ -1300,9 +1309,21 @@ function renderGuide(){
   document.querySelectorAll('#v-guide .g-origin').forEach(el=>{el.textContent=origin});
 }
 
+/* ── 统计页自动刷新：仅当前在统计页且浏览器页签激活时；切回前台立即刷新一次 ── */
+let STAT_TIMER=null;
+function startStatAutoRefresh(){
+  if(STAT_TIMER)clearInterval(STAT_TIMER);
+  STAT_TIMER=setInterval(()=>{
+    if(document.visibilityState==='visible'&&CURVIEW==='stats')loadStats().catch(()=>{});
+  },10000);
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&CURVIEW==='stats')loadStats().catch(()=>{});
+});
+
 /* ── 启动 ── */
 (async function init(){
-  try{await api('/admin/api/auth');showApp();go('stats')}catch(e){showLogin()}
+  try{await api('/admin/api/auth');showApp();go('stats');startStatAutoRefresh()}catch(e){showLogin()}
 })();
 </script>
 <div class="ss-list" id="ssList"></div>
