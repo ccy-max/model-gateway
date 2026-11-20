@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -251,6 +253,14 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 	var settings Settings
 	s.store.View(func(c *Config) { settings = c.Settings })
 
+	// 调试模式：记录客户端原始请求体（供日志 debug 字段使用）
+	debugReq := ""
+	if settings.DebugPayloads {
+		if b, err := json.Marshal(payload); err == nil {
+			debugReq = truncate(string(b), debugCap)
+		}
+	}
+
 	candSlice := make([]Candidate, len(cands))
 	attemptByKey := make(map[string]attemptInfo, len(cands))
 	for i, a := range cands {
@@ -277,7 +287,7 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 			continue
 		}
 		tried++
-		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings)
+		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings, debugReq)
 		if res.handled {
 			if res.status == http.StatusOK && stickyKey != "" && pm.Strategy == "sticky" {
 				s.router.RecordSticky(stickyKey, cd.Key)
@@ -302,14 +312,15 @@ type attemptResult struct {
 // （按权重轮询 + 失败冷却），key 级失败(401/402/403/408/429/5xx/网络)自动轮换下一把；
 // 全部 key 失败才把该成员判为失败（handled=false，交回成员级故障转移）。
 // 非 key 级 4xx（如 400/404 请求本身有误）直接写回客户端，不再轮换。
-func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings) attemptResult {
+// clientReq 为调试模式下的客户端请求报文（未开启时为空串）。
+func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq string) attemptResult {
 	memberKey := pm.ID + "|" + pmod.ID
 	s.router.Inflight(memberKey, 1)
 	defer s.router.Inflight(memberKey, -1)
 
 	keys := prov.EnabledKeys()
 	if len(keys) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, true, "无可用密钥")
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, true, "无可用密钥", "")
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
 	}
 
@@ -342,23 +353,41 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		s.router.Inflight(cd.Key, 1)
 		start := time.Now()
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(settings.ChatTimeoutSec)*time.Second)
-		resp, err := up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key)
+		var upReqBody []byte
+		resp, err := up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key, &upReqBody)
 		latency := time.Since(start).Milliseconds()
 
 		if err != nil {
 			cancel()
 			s.router.Inflight(cd.Key, -1)
 			s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err.Error())
+			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, 0, nil)
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err.Error(), dbg)
 			lastErr = fmt.Sprintf("%s(%s): %v", prov.Name, keyMask, err)
 			continue
 		}
 
 		if resp.StatusCode == http.StatusOK {
 			var prompt, compl, cached int64
+			var respHead []byte
 			if wantStream {
+				var buf *limitedBuffer
+				if settings.DebugPayloads {
+					buf = &limitedBuffer{max: debugCap}
+					resp.Body = newTeeBody(resp.Body, buf)
+				}
 				prompt, compl, cached = s.streamToClient(w, resp)
+				if buf != nil {
+					respHead = buf.b
+				}
 			} else {
+				if settings.DebugPayloads {
+					raw, rerr := io.ReadAll(resp.Body)
+					if rerr == nil {
+						respHead = raw
+						resp.Body = io.NopCloser(bytes.NewReader(raw))
+					}
+				}
 				var err2 error
 				prompt, compl, cached, err2 = s.jsonToClient(w, resp)
 				if err2 != nil {
@@ -366,14 +395,16 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 					cancel()
 					s.router.Inflight(cd.Key, -1)
 					s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
-					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err2.Error())
+					dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
+					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err2.Error(), dbg)
 					lastErr = fmt.Sprintf("%s(%s): 响应解析失败: %v", prov.Name, keyMask, err2)
 					continue
 				}
 			}
 			s.router.MarkSuccess(cd.Key)
 			s.router.Inflight(cd.Key, -1)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), prompt, compl, cached, false, "")
+			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), prompt, compl, cached, false, "", dbg)
 			cancel()
 			return attemptResult{handled: true, status: http.StatusOK, prompt: prompt, compl: compl}
 		}
@@ -385,7 +416,8 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		msg := upstreamError(resp.StatusCode, body)
 		failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
 			resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg))
+		dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, body)
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg)
 		if !failoverable {
 			writeUpstreamError(w, resp.StatusCode, msg)
 			return attemptResult{handled: true, status: resp.StatusCode, errMsg: msg}
@@ -394,6 +426,65 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		lastErr = fmt.Sprintf("%s(%s): %d %s", prov.Name, keyMask, resp.StatusCode, msg)
 	}
 	return attemptResult{handled: false, errMsg: lastErr}
+}
+
+// ---------- 调试报文捕获 ----------
+
+const debugCap = 8 * 1024 // 单段报文截断上限
+
+// limitedBuffer 只保留前 max 字节的写入缓冲（丢弃后续，不阻塞 tee）。
+type limitedBuffer struct {
+	b   []byte
+	max int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if len(l.b) < l.max {
+		room := l.max - len(l.b)
+		if len(p) > room {
+			l.b = append(l.b, p[:room]...)
+		} else {
+			l.b = append(l.b, p...)
+		}
+	}
+	return len(p), nil
+}
+
+// teeReadCloser 边读边把内容留底到 limitedBuffer（流式响应捕获用）。
+type teeReadCloser struct {
+	io.Reader
+	io.Closer
+	buf *limitedBuffer
+}
+
+func newTeeBody(rc io.ReadCloser, buf *limitedBuffer) io.ReadCloser {
+	return &teeReadCloser{Reader: io.TeeReader(rc, buf), Closer: rc, buf: buf}
+}
+
+// buildDebugPayload 汇总一条调试记录：客户端请求 + 上游请求 + 上游响应（均截断）。
+// clientReq 仅在调试模式开启时非空，据此保证「关闭即不记录」。
+func buildDebugPayload(clientReq string, upReq []byte, upURL, model, keyMask string, status int, respBody []byte) string {
+	if clientReq == "" {
+		return ""
+	}
+	d := map[string]any{
+		"client_request": clientReq,
+		"upstream_request": map[string]any{
+			"url":   upURL,
+			"model": model,
+			"key":   keyMask,
+			"body":  truncate(string(upReq), debugCap),
+		},
+		"upstream_response": map[string]any{
+			"status": status,
+			"body":   truncate(string(respBody), debugCap),
+		},
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return truncate(string(b), 2*debugCap)
 }
 
 // usageExtras 从 usage 对象里提取 缓存命中 tokens：
@@ -644,11 +735,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 统计与日志 ----------
 
-func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency int64, prompt, compl, cached int64, isErr bool, errMsg string) {
+func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency int64, prompt, compl, cached int64, isErr bool, errMsg, debug string) {
 	rec := RequestLog{
 		Time: time.Now().Unix(), KeyNote: keyNote, Model: platformName,
 		Provider: prov.Name, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
-		Latency: latency, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg,
+		Latency: latency, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
 	}
 	s.db.InsertLog(rec)
 	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency)
@@ -1409,6 +1500,18 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleLogs 最近请求日志（独立于统计的日期过滤，直接取最新 N 条）。
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"logs": s.db.QueryLogsRecent(limit)})
+}
+
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1434,6 +1537,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			if body.CooldownMaxSec > 0 {
 				c.Settings.CooldownMaxSec = body.CooldownMaxSec
 			}
+			// 布尔值直接赋值：面板每次都会带上完整设置
+			c.Settings.DebugPayloads = body.DebugPayloads
 		})
 		s.invalidateUpstreams()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1589,6 +1694,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/admin/api/keys/{key}", s.requireAuth(s.handleKeyByID))
 	mux.HandleFunc("GET /admin/api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("POST /admin/api/probe", s.requireAuth(s.handleProbe))
+	mux.HandleFunc("GET /admin/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("POST /admin/api/models/test", s.requireAuth(s.handleModelTest))
 	mux.HandleFunc("/admin/api/settings", s.requireAuth(s.handleSettings))
 

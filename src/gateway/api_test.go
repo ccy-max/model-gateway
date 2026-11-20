@@ -766,3 +766,118 @@ func TestModelTestEndpoint(t *testing.T) {
 		t.Fatalf("unknown model should produce ok=false with error, got %+v", out2)
 	}
 }
+
+func TestLogsAndDebugPayload(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	seedTwoProviders(s, up.URL, up.URL)
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+	client := &http.Client{}
+
+	// 未登录 → 401
+	resp, err := client.Get(ts.URL + "/admin/api/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthed logs expect 401, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 登录
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) == 0 {
+		t.Fatalf("login should set cookie, got %d", resp.StatusCode)
+	}
+	cookie := resp.Cookies()[0]
+	resp.Body.Close()
+
+	// 开启调试模式
+	req, _ = http.NewRequest(http.MethodPut, ts.URL+"/admin/api/settings",
+		strings.NewReader(`{"chat_timeout_seconds":30,"models_timeout_seconds":20,"cooldown_base_seconds":5,"cooldown_max_seconds":60,"debug_payloads":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("settings PUT expect 200, got %d", resp.StatusCode)
+	}
+
+	// 确认 GET settings 回读 debug_payloads=true
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/settings", nil)
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stOut struct {
+		DebugPayloads bool `json:"debug_payloads"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&stOut)
+	resp.Body.Close()
+	if !stOut.DebugPayloads {
+		t.Fatal("debug_payloads should persist as true")
+	}
+
+	// 发起一次真实对话（应产生带 debug 报文的日志）
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-test")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// 查日志
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/logs?limit=10", nil)
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logs expect 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		Logs []struct {
+			Model         string `json:"model"`
+			UpstreamModel string `json:"upstream_model"`
+			Debug         string `json:"debug"`
+		} `json:"logs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, l := range out.Logs {
+		if l.Model != "smart" {
+			continue
+		}
+		if l.UpstreamModel != "model-a" && l.UpstreamModel != "model-b" {
+			t.Fatalf("upstream_model should be recorded, got %q", l.UpstreamModel)
+		}
+		if !strings.Contains(l.Debug, "client_request") ||
+			!strings.Contains(l.Debug, "upstream_request") ||
+			!strings.Contains(l.Debug, "upstream_response") ||
+			!strings.Contains(l.Debug, `"status":200`) {
+			t.Fatalf("debug payload incomplete: %s", l.Debug)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("expected a smart-model log with debug payload, got %+v", out.Logs)
+	}
+}

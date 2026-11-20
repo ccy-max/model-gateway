@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 	for _, alter := range []string{
 		"ALTER TABLE request_logs ADD COLUMN cached_tokens INTEGER DEFAULT 0",
 		"ALTER TABLE daily_stats ADD COLUMN cached_tok INTEGER DEFAULT 0",
+		"ALTER TABLE request_logs ADD COLUMN debug TEXT DEFAULT ''",
 	} {
 		if _, err := d.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -103,10 +104,10 @@ func (d *DB) Close() { _ = d.db.Close() }
 // InsertLog 追加一条请求日志。
 func (d *DB) InsertLog(r RequestLog) {
 	_, err := d.db.Exec(`INSERT INTO request_logs
-(ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+(ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.Time, r.KeyNote, r.Model, r.Provider, r.UpModel, r.UpKey, r.Status, r.Latency,
-		boolToInt(r.Stream), r.PromptTok, r.ComplTok, r.CachedTok, r.Error)
+		boolToInt(r.Stream), r.PromptTok, r.ComplTok, r.CachedTok, r.Error, r.Debug)
 	if err != nil {
 		log.Printf("[db] 写请求日志失败: %v", err)
 	}
@@ -157,7 +158,7 @@ FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 // QueryLogs 按时间范围取日志，时间升序返回，最多 limit 条（取最新）。
 func (d *DB) QueryLogs(fromTs, toTs int64, limit int) []RequestLog {
 	out := []RequestLog{}
-	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error
+	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
 FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, toTs, limit)
 	if err != nil {
 		log.Printf("[db] 查日志失败: %v", err)
@@ -167,7 +168,7 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 	for rs.Next() {
 		var r RequestLog
 		var stream int
-		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error); err == nil {
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug); err == nil {
 			r.Stream = stream == 1
 			out = append(out, r)
 		}
@@ -175,6 +176,27 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 	// DESC 取最新 limit 条 → 反转成升序，保持与旧接口一致
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// QueryLogsRecent 取最新 limit 条日志（新→旧），供「日志」页使用。
+func (d *DB) QueryLogsRecent(limit int) []RequestLog {
+	out := []RequestLog{}
+	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+FROM request_logs ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		log.Printf("[db] 查日志失败: %v", err)
+		return out
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var r RequestLog
+		var stream int
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug); err == nil {
+			r.Stream = stream == 1
+			out = append(out, r)
+		}
 	}
 	return out
 }

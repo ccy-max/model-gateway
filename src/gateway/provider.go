@@ -41,7 +41,8 @@ func newUpstream(p Provider, chatTimeout, modelsTimeout time.Duration) *upstream
 // 仅覆写 model 与 stream，其余参数（temperature/tools/reasoning_effort 等）原样透传。
 // 流式时默认注入 stream_options.include_usage 以便统计 token。
 // key 由调用方按密钥池轮询选出。
-func (u *upstream) Chat(ctx context.Context, model string, body map[string]any, stream bool, key string) (*http.Response, error) {
+// 可变参数 capture 传入非 nil 的 *[]byte 时，会把实际发往上游的请求体原样带回（调试用）。
+func (u *upstream) Chat(ctx context.Context, model string, body map[string]any, stream bool, key string, capture ...*[]byte) (*http.Response, error) {
 	payload := make(map[string]any, len(body)+2)
 	for k, v := range body {
 		payload[k] = v
@@ -56,6 +57,9 @@ func (u *upstream) Chat(ctx context.Context, model string, body map[string]any, 
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
+	}
+	if len(capture) > 0 && capture[0] != nil {
+		*capture[0] = b
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.baseURL+"/chat/completions", bytes.NewReader(b))
 	if err != nil {

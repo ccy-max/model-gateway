@@ -259,6 +259,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
     <div class="side-head"><span class="logo">模型网关</span></div>
     <nav class="sidenav">
       <a class="nav-link active" data-v="stats" onclick="go('stats')"><span class="ic" data-ic="dashboard"></span>统计</a>
+      <a class="nav-link" data-v="logs" onclick="go('logs')"><span class="ic" data-ic="list"></span>日志</a>
       <a class="nav-link" data-v="providers" onclick="go('providers')"><span class="ic" data-ic="plug"></span>供应商</a>
       <a class="nav-link" data-v="platforms" onclick="go('platforms')"><span class="ic" data-ic="layers"></span>平台模型</a>
       <a class="nav-link" data-v="keys" onclick="go('keys')"><span class="ic" data-ic="key"></span>密钥</a>
@@ -309,6 +310,28 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
           <div class="table-wrap">
             <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 请求日志 -->
+    <section class="view" id="v-logs">
+      <div class="page-head">
+        <h1>请求日志</h1>
+        <div class="page-actions">
+          <select id="logLimit" class="select select-sm" onchange="loadLogs()">
+            <option value="50">最近 50 条</option>
+            <option value="100" selected>最近 100 条</option>
+            <option value="300">最近 300 条</option>
+            <option value="500">最近 500 条</option>
+          </select>
+          <button class="btn btn-outline btn-sm" onclick="loadLogs()"><span class="ic" data-ic="refresh"></span>刷新</button>
+        </div>
+      </div>
+      <p class="muted-xs" style="margin:-6px 0 14px">记录每次真实调用（含失败尝试，新→旧）。在「设置」开启调试模式后，可点「详情」查看请求/响应报文。</p>
+      <div class="card" style="padding:14px 20px">
+        <div class="table-wrap">
+          <table id="logsTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>tokens</th><th>结果</th><th></th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </section>
@@ -384,6 +407,14 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
           <div class="form-row">
             <label class="label">冷却上限（秒）</label>
             <input id="setCdMax" class="input input-sm" type="number">
+          </div>
+          <div class="form-row">
+            <label class="label">调试模式（记录请求/响应报文）</label>
+            <select id="setDebug" class="select select-sm" style="width:280px">
+              <option value="0">关闭（默认，只记录元数据）</option>
+              <option value="1">开启（额外记录报文，供排查）</option>
+            </select>
+            <p class="field-hint">开启后「日志」页每条记录可点「详情」查看客户端请求、上游请求与上游响应报文（各截断保存）。日志体积会明显增大，排查完建议关闭。</p>
           </div>
           <button class="btn btn-sm" onclick="saveSettings()">保存设置</button>
         </div>
@@ -468,6 +499,7 @@ print(resp.choices[0].message.content)</pre>
             <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
             <li><code>503 no_available_member</code>：平台模型没有启用成员，或所有成员正在冷却。</li>
             <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」看具体上游错误。</li>
+            <li>「日志」页可查全部请求记录；开启「设置 → 调试模式」后，每条日志可点「详情」查看请求/响应报文。</li>
           </ul>
         </div>
       </div>
@@ -593,6 +625,17 @@ print(resp.choices[0].message.content)</pre>
   </div>
 </div>
 
+<!-- 日志详情弹窗 -->
+<div class="overlay" id="mLogDetail" style="display:none">
+  <div class="modal" style="max-width:860px">
+    <div class="modal-title">请求详情 <span class="muted-xs" id="mLogTitle"></span></div>
+    <div id="logDetailBody" style="max-height:70vh;overflow:auto"></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mLogDetail')">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- 模型测试弹窗 -->
 <div class="overlay" id="mTest" style="display:none">
   <div class="modal" style="max-width:580px">
@@ -649,6 +692,8 @@ const ICONS={
  pencil:SVGP('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
  book:SVGP('<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>'),
  zap:SVGP('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+ list:SVGP('<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>'),
+ copy:SVGP('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
 };
 document.querySelectorAll('[data-ic]').forEach(el=>{el.innerHTML=ICONS[el.dataset.ic]||''});
 
@@ -714,6 +759,7 @@ function go(v){
   document.querySelectorAll('.view').forEach(p=>p.classList.toggle('on',p.id==='v-'+v));
   if(window.innerWidth<1024){document.getElementById('sidebar').classList.remove('open');document.getElementById('sideBackdrop').style.display='none'}
   if(v==='stats')loadStats();
+  if(v==='logs')loadLogs();
   if(v==='providers')loadProviders();
   if(v==='platforms')loadPlatforms();
   if(v==='keys')loadKeys();
@@ -769,7 +815,7 @@ async function loadStats(){
     ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求</div></td></tr>';
   document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
-    <td>${esc(l.provider||'-')}</td><td>${esc(l.up_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
     <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td></tr>`).join('')
     ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求日志</div></td></tr>';
@@ -793,7 +839,7 @@ async function loadProviders(){
     <td><span class="badge badge-muted">${esc(p.kind)}</span></td>
     <td class="muted-xs">${esc(p.base_url)}</td>
     <td>${p.model_count}</td>
-    <td>${p.enabled?'<span class="badge badge-ok">启用</span>':'<span class="badge badge-muted">停用</span>'}</td>
+    <td><span class="badge ${p.enabled?'badge-ok':'badge-muted'}" style="cursor:pointer" title="${p.enabled?'点击停用':'点击启用'}" onclick="togglePlatform('${p.id}')">${p.enabled?'启用':'停用'}</span></td>
     <td>
       <button class="btn btn-outline btn-sm" onclick="fetchRemote('${p.id}')">获取模型列表</button>
       <button class="btn btn-outline btn-sm" onclick="showPModels('${p.id}')">模型 ${p.model_count}</button>
@@ -954,7 +1000,7 @@ async function loadPlatforms(){
     <td class="muted-xs">${esc((p.aliases||[]).join('，'))}</td>
     <td><span class="badge badge-muted">${esc(p.strategy||'sticky')}</span></td>
     <td style="max-width:340px;white-space:normal">${(p.members_view||[]).map(m=>`<span class="badge ${m.enabled?'badge-ok':'badge-muted'}" title="权重 ${m.weight} · 优先级 ${m.priority}">${esc(m.provider_name)} / ${esc(m.model)} ×${m.weight}</span>`).join(' ')||'<span class="muted-xs">无成员</span>'}</td>
-    <td>${p.enabled?'<span class="badge badge-ok">启用</span>':'<span class="badge badge-muted">停用</span>'}</td>
+    <td><span class="badge ${p.enabled?'badge-ok':'badge-muted'}" style="cursor:pointer" title="${p.enabled?'点击停用':'点击启用'}" onclick="togglePlatform('${p.id}')">${p.enabled?'启用':'停用'}</span></td>
     <td>
       <button class="btn btn-outline btn-sm btn-icon" title="测试模型" onclick="openModelTest('${p.id}')"><span class="ic">${ICONS.zap}</span></button>
       <button class="btn btn-outline btn-sm btn-icon" title="编辑" onclick="openPlatformModal('${p.id}')"><span class="ic">${ICONS.pencil}</span></button>
@@ -1054,11 +1100,26 @@ function delPlatform(id,name){
 async function loadKeys(){
   const keys=await api('/admin/api/keys');
   document.querySelector('#keyTable tbody').innerHTML=keys.map(k=>`<tr>
-    <td><span class="key-chip mono">${esc(k.key)}</span></td>
+    <td><span class="key-chip mono" style="white-space:normal;word-break:break-all;max-width:560px;display:inline-block">${esc(k.key)}</span></td>
     <td>${esc(k.note||'-')}</td>
     <td class="muted-xs">${fmtTime(k.created_at)}</td>
-    <td><button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button></td></tr>`).join('')
+    <td>
+      <button class="btn btn-outline btn-sm btn-icon" title="复制完整密钥" onclick="copyText('${esc(k.key)}')"><span class="ic">${ICONS.copy}</span></button>
+      <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button>
+    </td></tr>`).join('')
     ||'<tr><td colspan="4"><div class="empty">暂无密钥</div></td></tr>';
+}
+function copyText(t){
+  const done=()=>toast('已复制到剪贴板');
+  const fallback=()=>{
+    const ta=document.createElement('textarea');
+    ta.value=t;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');done()}catch(e){toast('复制失败，请手动选择',true)}
+    ta.remove();
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done).catch(fallback)}
+  else fallback();
 }
 async function createKey(){
   const note=document.getElementById('keyNote').value.trim();
@@ -1077,9 +1138,10 @@ async function loadSettings(){
   document.getElementById('setModels').value=s.models_timeout_seconds;
   document.getElementById('setCdBase').value=s.cooldown_base_seconds;
   document.getElementById('setCdMax').value=s.cooldown_max_seconds;
+  document.getElementById('setDebug').value=s.debug_payloads?'1':'0';
 }
 async function saveSettings(){
-  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value};
+  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,debug_payloads:document.getElementById('setDebug').value==='1'};
   try{await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});toast('已保存')}catch(e){toast(e.message,true)}
 }
 async function changePwd(){
@@ -1125,6 +1187,56 @@ function bindSearchSelect(input,getItems,onPick){
   input.addEventListener('focus',()=>ssOpen(input,getItems(),onPick));
   input.addEventListener('input',()=>ssOpen(input,getItems(),onPick));
   input.addEventListener('blur',()=>setTimeout(()=>{if(SSSTATE.input===input)ssClose()},150));
+}
+
+/* ── 请求日志 ── */
+let LOGROWS=[];
+async function loadLogs(){
+  const limit=+document.getElementById('logLimit').value||100;
+  try{
+    const d=await api('/admin/api/logs?limit='+limit);
+    LOGROWS=d.logs||[];
+    document.querySelector('#logsTable tbody').innerHTML=LOGROWS.map((l,i)=>`<tr>
+    <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
+    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
+    <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td>
+    <td>${l.debug?`<button class="btn btn-outline btn-sm" onclick="showLogDetail(${i})">详情</button>`:''}</td></tr>`).join('')
+    ||'<tr><td colspan="10"><div class="empty">暂无请求日志</div></td></tr>';
+  }catch(e){toast(e.message,true)}
+}
+function showLogDetail(i){
+  const l=LOGROWS[i];
+  if(!l)return;
+  document.getElementById('mLogTitle').textContent='· '+(l.model||'')+' · '+fmtTime(l.time);
+  let d=null;
+  try{d=JSON.parse(l.debug)}catch(e){}
+  const sec=(title,txt)=>'<div style="margin-bottom:14px"><div class="label" style="margin-bottom:4px">'+title+'</div><pre class="guide-pre" style="max-height:260px;white-space:pre-wrap">'+esc(txt||'(空)')+'</pre></div>';
+  let html='';
+  if(d){
+    html+=sec('客户端请求',typeof d.client_request==='string'?d.client_request:JSON.stringify(d.client_request,null,2));
+    const ur=d.upstream_request||{};
+    html+=sec('上游请求（'+(ur.url||'')+' · 密钥 '+(ur.key||'')+'）','model: '+(ur.model||'')+'\n'+(ur.body||''));
+    const rp=d.upstream_response||{};
+    html+=sec('上游响应（HTTP '+(rp.status!=null?rp.status:'-')+'）',rp.body||'');
+  }else{
+    html=sec('调试数据',l.debug||'');
+  }
+  document.getElementById('logDetailBody').innerHTML=html;
+  openModal('mLogDetail');
+}
+
+/* ── 平台模型：启用/停用切换 ── */
+async function togglePlatform(id){
+  const p=PLATS.find(x=>x.id===id);
+  if(!p)return;
+  const body={name:p.name,aliases:p.aliases||[],strategy:p.strategy||'sticky',sticky_limit:p.sticky_limit||0,max_retry_members:p.max_retry_members||3,enabled:!p.enabled,
+    members:(p.members_view||[]).map(m=>({provider_model_id:m.provider_model_id,weight:m.weight,priority:m.priority,enabled:m.enabled}))};
+  try{
+    await api('/admin/api/platform-models/'+id,{method:'PUT',body:JSON.stringify(body)});
+    toast((p.enabled?'已停用：':'已启用：')+p.name);
+    loadPlatforms();
+  }catch(e){toast(e.message,true)}
 }
 
 /* ── 模型连通性测试 ── */
