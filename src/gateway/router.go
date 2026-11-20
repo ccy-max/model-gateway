@@ -141,33 +141,59 @@ func (r *Router) sortGroup(g []Candidate, strategy, stickyKey string, stickyLimi
 }
 
 // wrrOrder 经典平滑加权轮询：对剩余集合反复 current+=weight、取最大者入选并扣减总量。
+// wrrOrder 平滑加权轮询（标准 SWRR）：本次只做一次真实选择——全体候选累加自身权重，
+// 取累计最大者，选中者扣减「全组总权重」；currentWeight 持久化在路由状态里跨请求连续轮转。
+// 其余候选按 当前权重/权重 的比值降序紧随其后，仅作为失败转移顺序，不再改动持久状态。
+// 旧实现在构建完整顺序时会反复累加剩余候选、并用不断缩小的「剩余总权重」扣减，
+// 破坏 SWRR 不变量：3 把等权 key 会退化成前两把交替、第三把永远轮不到。
 func (r *Router) wrrOrder(g []Candidate) []Candidate {
-	rem := make([]Candidate, len(g))
-	copy(rem, g)
-	out := make([]Candidate, 0, len(g))
-	for len(rem) > 0 {
-		total := 0
-		bestCur := math.MinInt
-		bestIdx := 0
-		for i := range rem {
-			w := rem[i].Weight
-			if w <= 0 {
-				w = 1
-			}
-			st := r.state(rem[i].Key)
-			st.currentWeight += w
-			total += w
-			if st.currentWeight > bestCur {
-				bestCur = st.currentWeight
-				bestIdx = i
-			}
-		}
-		picked := rem[bestIdx]
-		r.state(picked.Key).currentWeight -= total
-		out = append(out, picked)
-		rem = append(rem[:bestIdx], rem[bestIdx+1:]...)
+	if len(g) == 0 {
+		return g
 	}
-	return out
+	total := 0
+	best := 0
+	bestCur := math.MinInt
+	for j := range g {
+		w := g[j].Weight
+		if w <= 0 {
+			w = 1
+		}
+		st := r.state(g[j].Key)
+		st.currentWeight += w
+		total += w
+		if st.currentWeight > bestCur {
+			bestCur = st.currentWeight
+			best = j
+		}
+	}
+	r.state(g[best].Key).currentWeight -= total
+	out := make([]Candidate, 0, len(g))
+	out = append(out, g[best])
+	if len(g) == 1 {
+		return out
+	}
+	rest := make([]Candidate, 0, len(g)-1)
+	for j := range g {
+		if j != best {
+			rest = append(rest, g[j])
+		}
+	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		wi, wj := rest[i].Weight, rest[j].Weight
+		if wi <= 0 {
+			wi = 1
+		}
+		if wj <= 0 {
+			wj = 1
+		}
+		li := r.state(rest[i].Key).currentWeight * wj
+		lj := r.state(rest[j].Key).currentWeight * wi
+		if li != lj {
+			return li > lj
+		}
+		return wi > wj
+	})
+	return append(out, rest...)
 }
 
 // MarkSuccess 请求成功：清零失败计数并解除冷却。

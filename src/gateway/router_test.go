@@ -119,3 +119,25 @@ func TestInflightAccounting(t *testing.T) {
 		t.Fatalf("inflight should clamp at 0, got %v", snap["x"])
 	}
 }
+
+func TestWRREqualWeightRotation(t *testing.T) {
+	r := NewRouter()
+	cands := []Candidate{
+		{Key: "k|a", Weight: 1, Priority: 0, Available: true},
+		{Key: "k|b", Weight: 1, Priority: 0, Available: true},
+		{Key: "k|c", Weight: 1, Priority: 0, Available: true},
+	}
+	counts := map[string]int{}
+	for i := 0; i < 30; i++ {
+		order := r.Pick(cands, "round-robin", "", 0)
+		if len(order) == 0 {
+			t.Fatal("no candidate returned")
+		}
+		counts[order[0].Key]++
+	}
+	for _, k := range []string{"k|a", "k|b", "k|c"} {
+		if counts[k] != 10 {
+			t.Fatalf("equal-weight keys should each serve 10/30, got %v", counts)
+		}
+	}
+}
