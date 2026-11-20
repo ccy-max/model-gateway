@@ -971,6 +971,37 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleProviderStatus 启用/停用供应商（停用后不参与任何调用选择）。
+func (s *Server) handleProviderStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "仅支持 POST")
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request", "请求体不合法")
+		return
+	}
+	id := r.PathValue("id")
+	updated := false
+	s.store.Update(func(c *Config) {
+		for i := range c.Providers {
+			if c.Providers[i].ID == id {
+				c.Providers[i].Enabled = body.Enabled
+				updated = true
+			}
+		}
+	})
+	if !updated {
+		writeErr(w, http.StatusNotFound, "not_found", "供应商不存在")
+		return
+	}
+	s.invalidateUpstreams()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleProviderModels 供应商模型列表（含路由运行态）。
 func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -1771,6 +1802,7 @@ func (s *Server) Routes() http.Handler {
 	// 供应商
 	mux.HandleFunc("/admin/api/providers", s.requireAuth(s.handleProviders))
 	mux.HandleFunc("/admin/api/providers/{id}", s.requireAuth(s.handleProviderByID))
+	mux.HandleFunc("/admin/api/providers/{id}/status", s.requireAuth(s.handleProviderStatus))
 	mux.HandleFunc("/admin/api/providers/{id}/models", s.requireAuth(s.handleProviderModels))
 	mux.HandleFunc("/admin/api/providers/{id}/models/remote", s.requireAuth(s.handleRemoteModels))
 	mux.HandleFunc("/admin/api/providers/{id}/models/import", s.requireAuth(s.handleImportModels))

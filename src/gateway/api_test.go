@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1034,4 +1035,84 @@ func TestStatsErrorAccounting(t *testing.T) {
 			t.Fatalf("errors must never exceed requests, got %+v", r)
 		}
 	}
+}
+
+func TestProviderStatusToggle(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	seedTwoProviders(s, up.URL, up.URL)
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+	client := &http.Client{}
+
+	// 登录
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := resp.Cookies()[0]
+	resp.Body.Close()
+
+	toggle := func(id string, enabled bool, want int) {
+		t.Helper()
+		body := fmt.Sprintf(`{"enabled":%v}`, enabled)
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/providers/"+id+"/status", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("toggle %s=%v: HTTP %d", id, enabled, resp.StatusCode)
+		}
+	}
+
+	// 停用 p1
+	toggle("p1", false, 200)
+
+	// 列表反映停用状态
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin/api/providers", nil)
+	req.AddCookie(cookie)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provs []Provider
+	if err := json.NewDecoder(resp.Body).Decode(&provs); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for _, p := range provs {
+		if p.ID == "p1" && p.Enabled {
+			t.Fatal("p1 should be disabled")
+		}
+		if p.ID == "p2" && !p.Enabled {
+			t.Fatal("p2 should stay enabled")
+		}
+	}
+
+	// 平台模型仍可经 p2 成员成功对话（故障转移）
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-test")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("chat after disable: HTTP %d", resp.StatusCode)
+	}
+
+	// 不存在的供应商 → 404
+	toggle("p_missing", false, 404)
+
+	// 重新启用
+	toggle("p1", true, 200)
 }

@@ -848,6 +848,24 @@ async function probeAll(){
 }
 
 /* ── 供应商 ── */
+async function toggleProvider(id){
+  const p=PROVS.find(x=>x.id===id);
+  if(!p)return;
+  const next=!p.enabled;
+  confirmBox(
+    next?'启用供应商':'停用供应商',
+    next
+      ?'启用后「'+p.name+'」恢复参与平台模型调用。确认启用？'
+      :'停用后「'+p.name+'」不再参与任何调用，引用它的平台模型成员会自动故障转移到其他供应商。确认停用？',
+    async()=>{
+      try{
+        await api('/admin/api/providers/'+id+'/status',{method:'POST',body:JSON.stringify({enabled:next})});
+        toast(next?'已启用':'已停用');
+        loadProviders();
+      }catch(e){toast(e.message,true)}
+    }
+  );
+}
 async function loadProviders(){
   PROVS=await api('/admin/api/providers');
   document.querySelector('#provTable tbody').innerHTML=PROVS.map(p=>`<tr>
@@ -855,7 +873,7 @@ async function loadProviders(){
     <td><span class="badge badge-muted">${esc(p.kind)}</span></td>
     <td class="muted-xs">${esc(p.base_url)}</td>
     <td>${p.model_count}</td>
-    <td><span class="badge ${p.enabled?'badge-ok':'badge-muted'}" style="cursor:pointer" title="${p.enabled?'点击停用':'点击启用'}" onclick="togglePlatform('${p.id}')">${p.enabled?'启用':'停用'}</span></td>
+    <td><span class="badge ${p.enabled?'badge-ok':'badge-muted'}" style="cursor:pointer" title="${p.enabled?'点击停用':'点击启用'}" onclick="toggleProvider('${p.id}')">${p.enabled?'启用':'停用'}</span></td>
     <td>
       <button class="btn btn-outline btn-sm" onclick="fetchRemote('${p.id}')">获取模型列表</button>
       <button class="btn btn-outline btn-sm" onclick="showPModels('${p.id}')">模型 ${p.model_count}</button>
