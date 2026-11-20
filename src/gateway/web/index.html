@@ -810,7 +810,7 @@ function applyStatRange(){
 async function loadStats(){
   const s=await api('/admin/api/stats'+statQuery());
   const tick=document.getElementById('statTick');
-  if(tick)tick.textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  if(tick)tick.textContent='10s 自动刷新 · 更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   const t=s.totals;
   const rangeTxt=s.from&&s.to?(s.from===s.to?s.from:s.from+' ~ '+s.to):'';
   const card=(label,val,detail)=>`<div class="metric"><div class="metric-head"><span class="metric-label">${label}</span><span class="ic">${ICONS.activity}</span></div><div class="metric-value">${val}</div><div class="metric-detail">${detail||''}</div></div>`;
@@ -1320,6 +1320,11 @@ function startStatAutoRefresh(){
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&CURVIEW==='stats')loadStats().catch(()=>{});
 });
+window.addEventListener('focus',()=>{
+  if(CURVIEW==='stats')loadStats().catch(()=>{});
+});
+/* 无论走「已登录直接进入」还是「表单登录」路径，定时器都要启动（幂等） */
+startStatAutoRefresh();
 
 /* ── 启动 ── */
 (async function init(){
