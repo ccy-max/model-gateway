@@ -263,6 +263,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <a class="nav-link" data-v="platforms" onclick="go('platforms')"><span class="ic" data-ic="layers"></span>平台模型</a>
       <a class="nav-link" data-v="keys" onclick="go('keys')"><span class="ic" data-ic="key"></span>密钥</a>
       <a class="nav-link" data-v="settings" onclick="go('settings')"><span class="ic" data-ic="settings"></span>设置</a>
+      <a class="nav-link" data-v="guide" onclick="go('guide')"><span class="ic" data-ic="book"></span>使用指引</a>
     </nav>
     <div class="side-foot">
       <div class="side-actions">
@@ -339,7 +340,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <p class="muted-xs" style="margin:-6px 0 14px">对外 model 名支持业务名 + 上游原名别名；成员按权重分流、按优先级故障转移，失败自动冷却摘除。</p>
       <div class="card" style="padding:14px 20px">
         <div class="table-wrap">
-          <table id="platTable"><thead><tr><th>对外名</th><th>别名</th><th>策略</th><th>成员</th><th>状态</th><th style="width:200px">操作</th></tr></thead><tbody></tbody></table>
+          <table id="platTable"><thead><tr><th>对外名</th><th>别名</th><th>策略</th><th>成员</th><th>状态</th><th style="width:240px">操作</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </section>
@@ -397,6 +398,77 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
             <input id="pwNew" class="input input-sm" type="password">
           </div>
           <button class="btn btn-sm" onclick="changePwd()">修改密码</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 使用指引 -->
+    <section class="view" id="v-guide">
+      <style>
+        .guide-pre{background:var(--bg-2,#f6f7f9);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:10px 12px;overflow:auto;white-space:pre;word-break:break-all;font-size:12.5px;line-height:1.55;margin:8px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+        html.dark .guide-pre{background:#0f172a;border-color:#1e293b;color:#e2e8f0}
+        .guide-steps{margin:6px 0 0;padding-left:20px}
+        .guide-steps li{margin:5px 0}
+        .guide-steps code,.guide-p code{background:var(--bg-2,#f6f7f9);border:1px solid var(--border,#e5e7eb);border-radius:4px;padding:1px 5px;font-size:12px}
+        html.dark .guide-steps code,html.dark .guide-p code{background:#0f172a;border-color:#1e293b;color:#e2e8f0}
+        .guide-p{margin:6px 0 0;font-size:13px}
+      </style>
+      <div class="page-head"><h1>使用指引</h1></div>
+      <div class="grid" style="grid-template-columns:1fr;gap:16px;max-width:980px">
+        <div class="card">
+          <div class="card-head"><h3>① 三步接入</h3></div>
+          <ol class="guide-steps">
+            <li>在「密钥」页创建并复制客户端 API Key（<code>sk-…</code>）。</li>
+            <li>确定接入地址：Base URL = <code><b class="g-origin">http://&lt;host&gt;:2325</b>/v1</code>。</li>
+            <li>在「平台模型」页确认对外模型名（业务名或别名均可），按下方案例调用。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>② curl 调用示例</h3></div>
+          <p class="guide-p">查看可用模型：</p>
+          <pre class="guide-pre">curl <span class="g-origin">http://localhost:2325</span>/v1/models -H "Authorization: Bearer sk-你的密钥"</pre>
+          <p class="guide-p">对话（非流式）：</p>
+          <pre class="guide-pre">curl <span class="g-origin">http://localhost:2325</span>/v1/chat/completions \
+  -H "Authorization: Bearer sk-你的密钥" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart-fast","messages":[{"role":"user","content":"你好"}]}'</pre>
+          <p class="guide-p">对话（流式，SSE 增量输出，最后一块带 usage）：</p>
+          <pre class="guide-pre">curl <span class="g-origin">http://localhost:2325</span>/v1/chat/completions \
+  -H "Authorization: Bearer sk-你的密钥" -H "Content-Type: application/json" \
+  -d '{"model":"smart-fast","stream":true,"messages":[{"role":"user","content":"你好"}]}'</pre>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>③ Python（OpenAI SDK）示例</h3></div>
+          <pre class="guide-pre">from openai import OpenAI
+
+client = OpenAI(base_url="<span class="g-origin">http://localhost:2325</span>/v1", api_key="sk-你的密钥")
+resp = client.chat.completions.create(
+    model="smart-fast",                                  # 平台模型名或别名
+    messages=[{"role": "user", "content": "你好"}],
+    # stream=True,                                       # 需要流式时打开
+)
+print(resp.choices[0].message.content)</pre>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>④ 接入新供应商（5 步）</h3></div>
+          <ol class="guide-steps">
+            <li>「供应商」页 → 新增供应商：填名称、Base URL、API Key（可填多把 Key 组成密钥池）。</li>
+            <li>点「获取模型列表」拉取上游目录，勾选要导入的模型。</li>
+            <li>「平台模型」页 → 新增/编辑平台模型，添加成员：选 供应商 › 模型，设权重（分流比例）与优先级（故障转移顺序）。</li>
+            <li>在平台模型列表点 <b>⚡测试</b> 验证整条链路连通性。</li>
+            <li>把 Base URL + 密钥 + 平台模型名交给调用方，完成。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>⑤ 模型测试与常见错误</h3></div>
+          <p class="guide-p">平台模型列表每行的「测试」按钮会按<b>真实调用链</b>（成员选择 → 密钥池轮换 → 故障转移）发一条小消息，返回时延、tokens 与回复摘要；测试请求会计入统计。</p>
+          <p class="guide-p">常见错误速查：</p>
+          <ul class="guide-steps">
+            <li><code>401 invalid_api_key</code>：客户端密钥不对，去「密钥」页核对。</li>
+            <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
+            <li><code>503 no_available_member</code>：平台模型没有启用成员，或所有成员正在冷却。</li>
+            <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」看具体上游错误。</li>
+          </ul>
         </div>
       </div>
     </section>
@@ -521,6 +593,26 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
   </div>
 </div>
 
+<!-- 模型测试弹窗 -->
+<div class="overlay" id="mTest" style="display:none">
+  <div class="modal" style="max-width:580px">
+    <div class="modal-title">测试模型 <span class="muted-xs" id="mTestModel"></span></div>
+    <div class="form-row">
+      <label class="label">测试消息</label>
+      <input id="fTestPrompt" class="input" value="你好，请回复：测试成功">
+    </div>
+    <div class="form-row">
+      <label class="label">max_tokens（0 = 不传，用上游默认；上限 1024）</label>
+      <input id="fTestMax" class="input input-sm" type="number" value="64" min="0" style="width:120px">
+    </div>
+    <div id="testResult" style="margin:8px 0 2px"></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mTest')">关闭</button>
+      <button class="btn btn-sm" id="testRunBtn" onclick="runModelTest()">开始测试</button>
+    </div>
+  </div>
+</div>
+
 <!-- 确认弹窗 -->
 <div class="overlay" id="mConfirm" style="display:none">
   <div class="modal" style="max-width:380px">
@@ -555,6 +647,8 @@ const ICONS={
  activity:SVGP('<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>'),
  trash:SVGP('<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>'),
  pencil:SVGP('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
+ book:SVGP('<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>'),
+ zap:SVGP('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
 };
 document.querySelectorAll('[data-ic]').forEach(el=>{el.innerHTML=ICONS[el.dataset.ic]||''});
 
@@ -624,6 +718,7 @@ function go(v){
   if(v==='platforms')loadPlatforms();
   if(v==='keys')loadKeys();
   if(v==='settings')loadSettings();
+  if(v==='guide')renderGuide();
 }
 
 /* ── 统计 ── */
@@ -861,6 +956,7 @@ async function loadPlatforms(){
     <td style="max-width:340px;white-space:normal">${(p.members_view||[]).map(m=>`<span class="badge ${m.enabled?'badge-ok':'badge-muted'}" title="权重 ${m.weight} · 优先级 ${m.priority}">${esc(m.provider_name)} / ${esc(m.model)} ×${m.weight}</span>`).join(' ')||'<span class="muted-xs">无成员</span>'}</td>
     <td>${p.enabled?'<span class="badge badge-ok">启用</span>':'<span class="badge badge-muted">停用</span>'}</td>
     <td>
+      <button class="btn btn-outline btn-sm btn-icon" title="测试模型" onclick="openModelTest('${p.id}')"><span class="ic">${ICONS.zap}</span></button>
       <button class="btn btn-outline btn-sm btn-icon" title="编辑" onclick="openPlatformModal('${p.id}')"><span class="ic">${ICONS.pencil}</span></button>
       <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delPlatform('${p.id}','${esc(p.name)}')"><span class="ic">${ICONS.trash}</span></button>
     </td></tr>`).join('')
@@ -1029,6 +1125,49 @@ function bindSearchSelect(input,getItems,onPick){
   input.addEventListener('focus',()=>ssOpen(input,getItems(),onPick));
   input.addEventListener('input',()=>ssOpen(input,getItems(),onPick));
   input.addEventListener('blur',()=>setTimeout(()=>{if(SSSTATE.input===input)ssClose()},150));
+}
+
+/* ── 模型连通性测试 ── */
+let TEST_MODEL='';
+function openModelTest(id){
+  const p=PLATS.find(x=>x.id===id);
+  if(!p)return;
+  TEST_MODEL=p.name;
+  document.getElementById('mTestModel').textContent='· '+p.name;
+  document.getElementById('testResult').innerHTML='';
+  openModal('mTest');
+}
+async function runModelTest(){
+  const prompt=document.getElementById('fTestPrompt').value.trim()||'你好';
+  const max=Math.max(0,Math.min(1024,+document.getElementById('fTestMax').value||0));
+  const box=document.getElementById('testResult');
+  const btn=document.getElementById('testRunBtn');
+  btn.disabled=true;btn.textContent='测试中…';
+  box.innerHTML='<div class="muted-xs">请求已按真实链路发出，等待上游响应…</div>';
+  try{
+    const r=await api('/admin/api/models/test',{method:'POST',body:JSON.stringify({model:TEST_MODEL,prompt,max_tokens:max})});
+    if(r.ok){
+      const u=r.usage||{};
+      box.innerHTML='<div style="font-weight:600;color:var(--ok,#16a34a)">✓ 模型可用</div>'
+        +'<div class="muted-xs" style="margin-top:2px">HTTP 200 · 时延 '+r.latency_ms+'ms · 输入 '+(u.prompt_tokens||0)+' / 输出 '+(u.completion_tokens||0)+' tokens'+(u.total_tokens?(' · 总 '+u.total_tokens):'')+'</div>'
+        +'<pre class="guide-pre" style="max-height:200px;white-space:pre-wrap">'+esc(r.content||'(空回复)')+'</pre>';
+      toast('模型可用，时延 '+r.latency_ms+'ms');
+    }else{
+      box.innerHTML='<div style="font-weight:600;color:var(--danger,#dc2626)">✗ 测试失败（HTTP '+r.http_status+'）</div>'
+        +'<pre class="guide-pre" style="max-height:200px;white-space:pre-wrap">'+esc(r.error||'未知错误')+'</pre>';
+      toast('模型测试失败',true);
+    }
+  }catch(e){
+    box.innerHTML='<div style="font-weight:600;color:var(--danger,#dc2626)">✗ '+esc(e.message)+'</div>';
+    toast('模型测试失败：'+e.message,true);
+  }
+  btn.disabled=false;btn.textContent='开始测试';
+}
+
+/* ── 使用指引 ── */
+function renderGuide(){
+  const origin=location.origin&&location.origin!=='null'?location.origin:('http://'+location.host);
+  document.querySelectorAll('#v-guide .g-origin').forEach(el=>{el.textContent=origin});
 }
 
 /* ── 启动 ── */

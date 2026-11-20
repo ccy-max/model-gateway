@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -188,6 +189,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_request", "缺少 model 字段")
 		return
 	}
+	s.dispatchChat(w, r, payload, key)
+}
+
+// dispatchChat 对话主流程：平台模型解析 → 成员候选构建 → 策略选路 → 密钥池轮换与故障转移。
+// 供 /v1/chat/completions 与管理端「模型测试」共用（测试经 httptest.Recorder 承接响应）。
+func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload map[string]any, key APIKey) {
+	modelName, _ := payload["model"].(string)
 	var pm PlatformModel
 	found := false
 	s.store.View(func(c *Config) { pm, found = c.ResolvePlatform(modelName) })
@@ -471,6 +479,121 @@ func writeUpstreamError(w http.ResponseWriter, status int, msg string) {
 }
 
 // handleModels 平台模型目录（含别名）。
+// ---------- 模型连通性测试（管理端） ----------
+
+type modelTestReq struct {
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	MaxTokens int    `json:"max_tokens"`
+}
+
+// handleModelTest 「测试模型是否能用」：按真实调用链（成员选择→密钥池轮换→故障转移）
+// 发一条小对话请求，返回是否可用、时延、tokens 与回复摘要；结果会照常计入请求日志与统计。
+func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
+	var req modelTestReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request", "请求体不是合法 JSON: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_request", "缺少 model 字段")
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		req.Prompt = "你好，请回复：测试成功"
+	}
+	if req.MaxTokens < 0 {
+		req.MaxTokens = 0
+	}
+	if req.MaxTokens > 1024 {
+		req.MaxTokens = 1024
+	}
+	var key APIKey
+	hasKey := false
+	s.store.View(func(c *Config) {
+		if len(c.APIKeys) > 0 {
+			key = c.APIKeys[0]
+			hasKey = true
+		}
+	})
+	if !hasKey {
+		writeErr(w, http.StatusServiceUnavailable, "no_api_key", "尚未配置客户端 API Key，请先在「密钥」页创建")
+		return
+	}
+	payload := map[string]any{
+		"model":    req.Model,
+		"messages": []map[string]string{{"role": "user", "content": req.Prompt}},
+		"stream":   false,
+	}
+	if req.MaxTokens > 0 {
+		payload["max_tokens"] = req.MaxTokens
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	s.dispatchChat(rec, req2, payload, key)
+	latency := time.Since(start).Milliseconds()
+
+	out := map[string]any{"model": req.Model, "latency_ms": latency, "http_status": rec.Code}
+	var resp map[string]any
+	if rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &resp) == nil {
+		out["ok"] = true
+		out["content"] = truncateRunes(replyContent(resp), 2000)
+		if u, ok := resp["usage"].(map[string]any); ok {
+			out["usage"] = u
+		}
+	} else {
+		out["ok"] = false
+		msg := strings.TrimSpace(rec.Body.String())
+		if len(msg) > 500 {
+			msg = msg[:500] + "…"
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("上游返回 HTTP %d", rec.Code)
+		}
+		out["error"] = msg
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// replyContent 从 OpenAI 兼容响应中提取回复文本（兼容 reasoning_content / text 字段）。
+func replyContent(resp map[string]any) string {
+	choices, _ := resp["choices"].([]any)
+	if len(choices) == 0 {
+		return ""
+	}
+	c0, _ := choices[0].(map[string]any)
+	if c0 == nil {
+		return ""
+	}
+	if msg, ok := c0["message"].(map[string]any); ok {
+		if s, ok := msg["content"].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+		if s, ok := msg["reasoning_content"].(string); ok && strings.TrimSpace(s) != "" {
+			return "[思考] " + s
+		}
+	}
+	if s, ok := c0["text"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.checkAPIKey(r); !ok {
 		writeErr(w, http.StatusUnauthorized, "invalid_api_key", "无效的 API Key")
@@ -1466,6 +1589,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/admin/api/keys/{key}", s.requireAuth(s.handleKeyByID))
 	mux.HandleFunc("GET /admin/api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("POST /admin/api/probe", s.requireAuth(s.handleProbe))
+	mux.HandleFunc("POST /admin/api/models/test", s.requireAuth(s.handleModelTest))
 	mux.HandleFunc("/admin/api/settings", s.requireAuth(s.handleSettings))
 
 	// 内嵌面板

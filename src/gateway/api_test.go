@@ -677,3 +677,92 @@ func TestUsageCacheExtraction(t *testing.T) {
 		t.Fatalf("stream expect 50/5/30, got %d/%d/%d", p3, c3, ce3)
 	}
 }
+
+func TestModelTestEndpoint(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	seedTwoProviders(s, up.URL, up.URL)
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+	client := &http.Client{}
+
+	// 未登录 → 401
+	resp, err := client.Post(ts.URL+"/admin/api/models/test", "application/json", strings.NewReader(`{"model":"smart"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthed model test expect 401, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 登录拿 cookie
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || len(resp.Cookies()) == 0 {
+		t.Fatalf("login should set cookie, got %d", resp.StatusCode)
+	}
+	cookie := resp.Cookies()[0]
+	resp.Body.Close()
+
+	post := func(body string) *http.Response {
+		r, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/models/test", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(cookie)
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// 缺 model → 400
+	resp = post(`{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing model expect 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 正常测试 → ok=true，带时延、usage 与回复内容
+	resp = post(`{"model":"smart","prompt":"hi","max_tokens":16}`)
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("model test expect 200, got %d: %s", resp.StatusCode, b)
+	}
+	var out struct {
+		OK         bool           `json:"ok"`
+		Model      string         `json:"model"`
+		LatencyMs  int64          `json:"latency_ms"`
+		HTTPStatus int            `json:"http_status"`
+		Content    string         `json:"content"`
+		Usage      map[string]any `json:"usage"`
+		Error      string         `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !out.OK || out.Content != "hi" || out.LatencyMs < 0 || out.Usage == nil || out.Model != "smart" {
+		t.Fatalf("unexpected test result: %+v", out)
+	}
+
+	// 未知模型 → HTTP 200 内 ok=false，带错误信息
+	resp = post(`{"model":"no-such"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("test endpoint should always answer 200, got %d", resp.StatusCode)
+	}
+	var out2 struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out2)
+	resp.Body.Close()
+	if out2.OK || out2.Error == "" {
+		t.Fatalf("unknown model should produce ok=false with error, got %+v", out2)
+	}
+}
