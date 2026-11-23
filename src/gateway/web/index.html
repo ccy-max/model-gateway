@@ -1193,9 +1193,13 @@ async function changePwd(){
 }
 
 /* ── 自定义可搜索下拉（与面板同风格，替代原生 datalist） ── */
-const SSSTATE={input:null,onPick:null};
+const SSSTATE={input:null,getItems:null,onPick:null};
 function ssOpen(input,items,onPick){
   SSSTATE.input=input;SSSTATE.onPick=onPick||null;
+  ssRender(items);
+}
+function ssRender(items){
+  const input=SSSTATE.input;
   const list=document.getElementById('ssList');
   const q=input.value.trim().toLowerCase();
   const hits=items.filter(x=>!q||x.toLowerCase().includes(q));
@@ -1216,19 +1220,34 @@ function ssOpen(input,items,onPick){
 function ssClose(){
   const l=document.getElementById('ssList');
   if(l)l.style.display='none';
-  SSSTATE.input=null;SSSTATE.onPick=null;
+  SSSTATE.input=null;SSSTATE.getItems=null;SSSTATE.onPick=null;
 }
 document.addEventListener('mousedown',e=>{
   const l=document.getElementById('ssList');
   if(l&&l.style.display==='block'&&SSSTATE.input&&!l.contains(e.target)&&e.target!==SSSTATE.input)ssClose();
 });
-document.addEventListener('scroll',()=>ssClose(),true);
+// 页面滚动时把下拉重新贴到输入框下方（而非直接关闭）；下拉列表自身滚动除外
+document.addEventListener('scroll',e=>{
+  const l=document.getElementById('ssList');
+  if(!SSSTATE.input||!l||l.style.display!=='block')return;
+  if(l.contains(e.target))return;
+  if(SSSTATE.getItems)ssRender(SSSTATE.getItems());
+},true);
 document.addEventListener('keydown',e=>{if(e.key==='Escape')ssClose()});
 // bindSearchSelect：把任意输入框变成可搜索下拉。
 // getItems() 每次打开时取候选；onPick(text) 选中后回调。
 function bindSearchSelect(input,getItems,onPick){
-  input.addEventListener('focus',()=>ssOpen(input,getItems(),onPick));
-  input.addEventListener('input',()=>ssOpen(input,getItems(),onPick));
+  const open=()=>{SSSTATE.getItems=getItems;ssOpen(input,getItems(),onPick)};
+  input.addEventListener('focus',open);
+  input.addEventListener('input',()=>{
+    open();
+    // 输入内容与某候选完全一致（忽略大小写）时自动选中，不必点击下拉项
+    const v=input.value.trim().toLowerCase();
+    if(onPick&&v){
+      const hit=(getItems()||[]).find(x=>x.toLowerCase()===v);
+      if(hit){input.value=hit;ssClose();onPick(hit)}
+    }
+  });
   input.addEventListener('blur',()=>setTimeout(()=>{if(SSSTATE.input===input)ssClose()},150));
 }
 
