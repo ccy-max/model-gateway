@@ -18,9 +18,10 @@ type Candidate struct {
 // memberState 成员运行时状态（仅进程内，不落盘）。
 type memberState struct {
 	inflight      int
-	currentWeight int // 平滑加权轮询游标
+	currentWeight int         // 平滑加权轮询游标
 	consecFails   int
 	cooldownUntil time.Time
+	hits          []time.Time // 时间窗限流：窗口内的请求时间戳
 }
 
 // stickyEntry 会话粘性记录。
@@ -225,6 +226,45 @@ func (r *Router) MarkFailure(key string, baseSec, maxSec int) {
 		d = time.Duration(maxSec) * time.Second
 	}
 	st.cooldownUntil = r.nowFunc().Add(d)
+}
+
+// InflightOf 查询某成员/密钥当前的并发数。
+func (r *Router) InflightOf(key string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state(key).inflight
+}
+
+// RateCheck 时间窗限流检查（滑动窗口）：窗口内已用次数 < limit 才放行。
+// 只检查不记录；真正发起调用时用 RateRecord 记一笔。
+func (r *Router) RateCheck(key string, limit, windowSec int) bool {
+	if limit <= 0 || windowSec <= 0 {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.nowFunc()
+	st := r.state(key)
+	cutoff := now.Add(-time.Duration(windowSec) * time.Second)
+	kept := st.hits[:0]
+	for _, t := range st.hits {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	st.hits = kept
+	return len(st.hits) < limit
+}
+
+// RateRecord 记一次请求时间戳（配合 RateCheck 做滑动窗口限流）。
+func (r *Router) RateRecord(key string, limit, windowSec int) {
+	if limit <= 0 || windowSec <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.state(key)
+	st.hits = append(st.hits, r.nowFunc())
 }
 
 // Inflight 调整成员并发计数（请求开始 +1，结束 -1）。

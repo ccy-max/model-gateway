@@ -32,12 +32,15 @@ type APIKey struct {
 
 // ProviderKey 供应商密钥池中的一把 key：同平台多 key 按 key 负载均衡。
 type ProviderKey struct {
-	Key       string `json:"key"`
-	Note      string `json:"note,omitempty"`
-	Weight    int    `json:"weight,omitempty"`   // 分流权重，默认 1
-	Priority  int    `json:"priority,omitempty"` // 备用序，数字小者优先，默认 0
-	CreatedAt int64  `json:"created_at,omitempty"`
-	Disabled  bool   `json:"disabled,omitempty"`
+	Key           string `json:"key"`
+	Note          string `json:"note,omitempty"`
+	Weight        int    `json:"weight,omitempty"`   // 分流权重，默认 1
+	Priority      int    `json:"priority,omitempty"` // 备用序，数字小者优先，默认 0
+	CreatedAt     int64  `json:"created_at,omitempty"`
+	Disabled      bool   `json:"disabled,omitempty"`
+	MaxInflight   int    `json:"max_inflight,omitempty"`    // 最大并发数（同时处理的上限），0=不限
+	RateLimit     int    `json:"rate_limit,omitempty"`      // 时间窗内最多请求数，0=不限
+	RateWindowSec int    `json:"rate_window_sec,omitempty"` // 时间窗长度（秒），与 RateLimit 配合使用
 }
 
 // Provider 上游供应商。MVP 阶段 Kind 恒为 openai-compat；

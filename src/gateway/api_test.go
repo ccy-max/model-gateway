@@ -1116,3 +1116,164 @@ func TestProviderStatusToggle(t *testing.T) {
 	// 重新启用
 	toggle("p1", true, 200)
 }
+
+func TestKeyConcurrencyLimit(t *testing.T) {
+	// 单 key 最大并发=1：第一个请求占用期间，第二个请求应被限流（429）
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	t.Cleanup(up.Close)
+
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	s.store.Update(func(c *Config) {
+		c.Password = "test-pass"
+		c.APIKeys = []APIKey{{Key: "sk-test", Note: "t", CreatedAt: 1}}
+		c.Providers = []Provider{{
+			ID: "p1", Name: "限流上游", Kind: "openai-compat", BaseURL: up.URL, Enabled: true,
+			Keys: []ProviderKey{{Key: "K1", Weight: 1, MaxInflight: 1}},
+		}}
+		c.ProviderModels = []ProviderModel{{ID: "prm1", ProviderID: "p1", Model: "model-a", Enabled: true}}
+		c.PlatformModels = []PlatformModel{{ID: "plat1", Name: "smart", Strategy: "round-robin", Enabled: true, MaxRetry: 3,
+			Members: []Member{{ProviderModelID: "prm1", Weight: 1, Priority: 0, Enabled: true}}}}
+	})
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+
+	chat := func() int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 第一个请求：占用 K1（挂起直到 release）
+	codeCh := make(chan int, 1)
+	go func() { codeCh <- chat() }()
+	time.Sleep(300 * time.Millisecond) // 等它登记到 K1 的并发计数
+
+	// 第二个请求：K1 并发已满 → 429
+	if got := chat(); got != http.StatusTooManyRequests {
+		t.Fatalf("second request should be 429 when the only key is at capacity, got %d", got)
+	}
+	close(release)
+	if got := <-codeCh; got != 200 {
+		t.Fatalf("first request should succeed, got %d", got)
+	}
+
+	// 释放后可再次服务
+	if got := chat(); got != 200 {
+		t.Fatalf("after release should be 200, got %d", got)
+	}
+}
+
+func TestKeyConcurrencySkipToNextKey(t *testing.T) {
+	// 两把 key：K1 并发 1（高权重优先被选），K2 不限。K1 被占用时新请求应跳到 K2。
+	// 注意：只有 K1 的请求被挂起；K2 立即返回，否则跳转路径会被卡死。
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Authorization"), "K1") {
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	t.Cleanup(up.Close)
+
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	s.store.Update(func(c *Config) {
+		c.Password = "test-pass"
+		c.APIKeys = []APIKey{{Key: "sk-test", Note: "t", CreatedAt: 1}}
+		c.Providers = []Provider{{
+			ID: "p1", Name: "限流上游", Kind: "openai-compat", BaseURL: up.URL, Enabled: true,
+			Keys: []ProviderKey{
+				{Key: "K1", Weight: 10, MaxInflight: 1},
+				{Key: "K2", Weight: 1},
+			},
+		}}
+		c.ProviderModels = []ProviderModel{{ID: "prm1", ProviderID: "p1", Model: "model-a", Enabled: true}}
+		c.PlatformModels = []PlatformModel{{ID: "plat1", Name: "smart", Strategy: "round-robin", Enabled: true, MaxRetry: 3,
+			Members: []Member{{ProviderModelID: "prm1", Weight: 1, Priority: 0, Enabled: true}}}}
+	})
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+
+	chat := func() int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	go func() { _ = chat() }() // 占住 K1
+	time.Sleep(300 * time.Millisecond)
+	// K1 满 → 自动跳到 K2，请求成功
+	if got := chat(); got != 200 {
+		t.Fatalf("request should skip full key and succeed via K2, got %d", got)
+	}
+	close(release)
+}
+
+func TestKeyRateWindowLimit(t *testing.T) {
+	up := fakeUpstream(t, 200, "")
+	st := newTestStore(t)
+	s := NewServer(st, "test")
+	s.store.Update(func(c *Config) {
+		c.Password = "test-pass"
+		c.APIKeys = []APIKey{{Key: "sk-test", Note: "t", CreatedAt: 1}}
+		c.Providers = []Provider{{
+			ID: "p1", Name: "限流上游", Kind: "openai-compat", BaseURL: up.URL, Enabled: true,
+			Keys: []ProviderKey{{Key: "K1", Weight: 1, RateLimit: 2, RateWindowSec: 1}},
+		}}
+		c.ProviderModels = []ProviderModel{{ID: "prm1", ProviderID: "p1", Model: "model-a", Enabled: true}}
+		c.PlatformModels = []PlatformModel{{ID: "plat1", Name: "smart", Strategy: "round-robin", Enabled: true, MaxRetry: 3,
+			Members: []Member{{ProviderModelID: "prm1", Weight: 1, Priority: 0, Enabled: true}}}}
+	})
+	ts := httptest.NewServer(s.Routes())
+	t.Cleanup(ts.Close)
+
+	chat := func() int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"smart","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-test")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 窗口 1 秒内最多 2 次：前两次 200，第三次 429
+	if got := chat(); got != 200 {
+		t.Fatalf("req1 should pass, got %d", got)
+	}
+	if got := chat(); got != 200 {
+		t.Fatalf("req2 should pass, got %d", got)
+	}
+	if got := chat(); got != http.StatusTooManyRequests {
+		t.Fatalf("req3 should be 429 (rate window), got %d", got)
+	}
+	// 窗口滑过后恢复
+	time.Sleep(1100 * time.Millisecond)
+	if got := chat(); got != 200 {
+		t.Fatalf("after window slides should be 200, got %d", got)
+	}
+}

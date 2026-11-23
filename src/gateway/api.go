@@ -295,6 +295,7 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 
 	tried := 0
 	lastErr := "无可用成员"
+	allSaturated := true
 	for _, cd := range order {
 		if tried >= maxRetry {
 			break
@@ -311,18 +312,27 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 			}
 			return
 		}
+		if !res.saturated {
+			allSaturated = false
+		}
 		lastErr = res.errMsg
+	}
+	if allSaturated && tried > 0 {
+		// 所有成员的密钥并发/限流都已满：按约定返回 429，由客户端稍后重试
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "所有密钥并发/限流已满，请稍后重试")
+		return
 	}
 	writeErr(w, http.StatusBadGateway, "all_members_failed", fmt.Sprintf("尝试 %d 个成员均失败: %s", tried, lastErr))
 }
 
 // attemptResult 单次成员尝试结果。
 type attemptResult struct {
-	handled bool // 响应已写回客户端（成功，或不可转移的错误）
-	status  int
-	prompt  int64
-	compl   int64
-	errMsg  string
+	handled   bool // 响应已写回客户端（成功，或不可转移的错误）
+	saturated bool // 该成员因并发/限流满被跳过（未真正发起调用）
+	status    int
+	prompt    int64
+	compl     int64
+	errMsg    string
 }
 
 // tryMember 对单个成员发起调用：先在供应商密钥池内做第二轮负载均衡
@@ -341,16 +351,24 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
 	}
 
-	cands := make([]Candidate, len(keys))
+	// 每把 key 的最大并发数（MaxInflight，0=不限）：已满载的 key 直接跳过
+	cands := make([]Candidate, 0, len(keys))
 	byCand := make(map[string]ProviderKey, len(keys))
-	for i, k := range keys {
+	for _, k := range keys {
+		ck := prov.ID + "|k|" + k.Key
+		if k.MaxInflight > 0 && s.router.InflightOf(ck) >= k.MaxInflight {
+			continue // 该 key 并发已满，跳到下一把
+		}
 		weight := k.Weight
 		if weight <= 0 {
 			weight = 1
 		}
-		ck := prov.ID + "|k|" + k.Key
-		cands[i] = Candidate{Key: ck, Weight: weight, Priority: k.Priority, Available: true}
+		cands = append(cands, Candidate{Key: ck, Weight: weight, Priority: k.Priority, Available: true})
 		byCand[ck] = k
+	}
+	if len(cands) == 0 {
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "")
+		return attemptResult{handled: false, saturated: true, errMsg: prov.Name + ": 全部密钥并发已满"}
 	}
 	order := s.router.Pick(cands, "round-robin", "", 0)
 	maxKeyTries := len(order)
@@ -360,12 +378,21 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 
 	up := s.getUpstream(prov)
 	lastErr := ""
+	attempted := false // 是否真正发起过调用（被限流跳过的不算）
 	for i, cd := range order {
 		if i >= maxKeyTries {
 			break
 		}
 		pk := byCand[cd.Key]
 		keyMask := MaskKey(pk.Key)
+
+		// 时间窗限流（滑动窗口）：窗口内次数已满则跳到下一把 key（不算失败、不冷却）
+		if !s.router.RateCheck(cd.Key, pk.RateLimit, pk.RateWindowSec) {
+			lastErr = fmt.Sprintf("%s(%s): 时间窗限流已满（%d 次/%d 秒）", prov.Name, keyMask, pk.RateLimit, pk.RateWindowSec)
+			continue
+		}
+		attempted = true
+		s.router.RateRecord(cd.Key, pk.RateLimit, pk.RateWindowSec)
 
 		s.router.Inflight(cd.Key, 1)
 		start := time.Now()
@@ -442,7 +469,8 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
 		lastErr = fmt.Sprintf("%s(%s): %d %s", prov.Name, keyMask, resp.StatusCode, msg)
 	}
-	return attemptResult{handled: false, errMsg: lastErr}
+	// 一把都没真正发出去（全部被并发/限流跳过）→ 标记 saturated，供上层返回 429
+	return attemptResult{handled: false, saturated: !attempted, errMsg: lastErr}
 }
 
 // ---------- 调试报文捕获 ----------
@@ -1258,6 +1286,9 @@ func (s *Server) handleProviderKeyByID(w http.ResponseWriter, r *http.Request) {
 				}
 				p.Keys[i].Priority = body.Priority
 				p.Keys[i].Disabled = body.Disabled
+				p.Keys[i].MaxInflight = body.MaxInflight
+				p.Keys[i].RateLimit = body.RateLimit
+				p.Keys[i].RateWindowSec = body.RateWindowSec
 				updated = true
 			}
 			if updated {

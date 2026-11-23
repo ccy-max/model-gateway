@@ -578,7 +578,7 @@ print(resp.choices[0].message.content)</pre>
 <div class="overlay" id="mKeys" style="display:none">
   <div class="modal" style="max-width:720px">
     <div class="modal-title">密钥池 <span class="muted-xs" id="mKeysProv"></span></div>
-    <p class="modal-msg">同平台多 key 按权重轮询分流；失败 key 自动冷却摘除，恢复后自动回归。</p>
+    <p class="modal-msg">同平台多 key 按权重轮询分流；失败 key 自动冷却摘除，恢复后自动回归。每把 key 可设「最大并发」与「时间窗限流（次数/秒）」（0=不限）：满载的 key 自动跳过，全部满载时返回 429。</p>
     <div class="row" style="margin-bottom:10px">
       <input id="newKeyVal" class="input input-sm" placeholder="sk-..." style="flex:2;min-width:180px">
       <input id="newKeyNote" class="input input-sm" placeholder="备注（可选）" style="flex:1;min-width:120px">
@@ -1003,10 +1003,13 @@ async function renderKeys(){
       <input type="checkbox" ${k.disabled?'':'checked'} title="启用" onchange="updKey('${esc(k.key)}',{disabled:!this.checked})">
       <span class="nm mono" title="${esc(k.key)}">${esc(k.key.length>16?k.key.slice(0,10)+'…'+k.key.slice(-4):k.key)}</span>
       ${k.cooldown_left>0?`<span class="badge badge-warn">冷却 ${k.cooldown_left}s</span>`:''}
-      ${k.inflight>0?`<span class="badge badge-muted">并发 ${k.inflight}</span>`:''}
+      ${k.inflight>0?`<span class="badge badge-muted">并发 ${k.inflight}${k.max_inflight?'/'+k.max_inflight:''}</span>`:(k.max_inflight?`<span class="badge badge-muted">并发 0/${k.max_inflight}</span>`:'')}
       <span class="caps" style="margin-left:auto;display:flex;gap:6px;align-items:center">
         <input class="input input-sm" style="width:110px" value="${esc(k.note||'')}" placeholder="备注" onchange="updKey('${esc(k.key)}',{note:this.value})">
-        <input class="input input-sm" style="width:62px" type="number" min="1" value="${k.weight||1}" title="权重" onchange="updKey('${esc(k.key)}',{weight:+this.value||1})">
+        <input class="input input-sm" style="width:56px" type="number" min="1" value="${k.weight||1}" title="权重" onchange="updKey('${esc(k.key)}',{weight:+this.value||1})">
+        <input class="input input-sm" style="width:64px" type="number" min="0" value="${k.max_inflight||0}" title="最大并发（0=不限）：同时处理的上限，满载自动跳下一把 key" onchange="updKey('${esc(k.key)}',{max_inflight:Math.max(0,+this.value||0)})">
+        <input class="input input-sm" style="width:56px" type="number" min="0" value="${k.rate_limit||0}" title="时间窗内最多请求次数（0=不限）" onchange="updKey('${esc(k.key)}',{rate_limit:Math.max(0,+this.value||0)})">
+        <input class="input input-sm" style="width:56px" type="number" min="0" value="${k.rate_window_sec||0}" title="时间窗长度（秒），与左边的次数配合" onchange="updKey('${esc(k.key)}',{rate_window_sec:Math.max(0,+this.value||0)})">
         <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delProviderKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button>
       </span>
     </div>`).join('')||'<div style="padding:14px" class="muted-xs">尚无密钥，请在上方添加</div>';
@@ -1015,9 +1018,9 @@ async function addProviderKey(){
   const key=document.getElementById('newKeyVal').value.trim();
   if(!key){toast('请输入密钥',true);return}
   try{
-    await api('/admin/api/providers/'+CUR_PROV+'/keys',{method:'POST',body:JSON.stringify({key,note:document.getElementById('newKeyNote').value.trim()})});
+    await api('/admin/api/providers/'+CUR_PROV+'/keys',{method:'POST',body:JSON.stringify({key,note:document.getElementById('newKeyNote').value.trim(),max_inflight:3})});
     document.getElementById('newKeyVal').value='';document.getElementById('newKeyNote').value='';
-    toast('已添加');await renderKeys();loadProviders();
+    toast('已添加（默认最大并发 3，可在下方调整）');await renderKeys();loadProviders();
   }catch(e){toast(e.message,true)}
 }
 async function updKey(key,patch){
