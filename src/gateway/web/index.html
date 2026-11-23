@@ -448,22 +448,45 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
         html.dark .guide-pre{background:#0f172a;border-color:#1e293b;color:#e2e8f0}
         .guide-steps{margin:6px 0 0;padding-left:20px}
         .guide-steps li{margin:5px 0}
-        .guide-steps code,.guide-p code{background:var(--bg-2,#f6f7f9);border:1px solid var(--border,#e5e7eb);border-radius:4px;padding:1px 5px;font-size:12px}
-        html.dark .guide-steps code,html.dark .guide-p code{background:#0f172a;border-color:#1e293b;color:#e2e8f0}
+        .guide-steps code,.guide-p code,.guide-td code{background:var(--bg-2,#f6f7f9);border:1px solid var(--border,#e5e7eb);border-radius:4px;padding:1px 5px;font-size:12px}
+        html.dark .guide-steps code,html.dark .guide-p code,html.dark .guide-td code{background:#0f172a;border-color:#1e293b;color:#e2e8f0}
         .guide-p{margin:6px 0 0;font-size:13px}
+        .guide-wrap{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px;max-width:1080px;align-items:start}
+        .guide-toc{position:sticky;top:16px;display:flex;flex-direction:column;gap:2px}
+        .guide-toc a{font-size:12.5px;padding:6px 10px;border-radius:6px;color:var(--muted,#6b7280);cursor:pointer;text-decoration:none}
+        .guide-toc a:hover{background:var(--secondary,#f1f5f9);color:var(--foreground,#111827)}
+        html.dark .guide-toc a:hover{background:#1e293b;color:#e2e8f0}
+        @media (max-width:900px){.guide-wrap{grid-template-columns:1fr}.guide-toc{position:static;flex-direction:row;flex-wrap:wrap}}
       </style>
       <div class="page-head"><h1>使用指引</h1></div>
-      <div class="grid" style="grid-template-columns:1fr;gap:16px;max-width:980px">
-        <div class="card">
-          <div class="card-head"><h3>① 三步接入</h3></div>
+      <div class="guide-wrap">
+        <nav class="guide-toc card" id="guideToc">
+          <a data-t="g-1">① 快速开始</a>
+          <a data-t="g-2">② 调用方式</a>
+          <a data-t="g-3">③ 供应商管理</a>
+          <a data-t="g-4">④ 平台模型与负载策略</a>
+          <a data-t="g-5">⑤ 密钥池：并发与限流</a>
+          <a data-t="g-6">⑥ 客户端 API 密钥</a>
+          <a data-t="g-7">⑦ 统计页说明</a>
+          <a data-t="g-8">⑧ 日志与调试</a>
+          <a data-t="g-9">⑨ 系统设置</a>
+          <a data-t="g-10">⑩ 错误码速查</a>
+        </nav>
+        <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+        <div class="card" id="g-1">
+          <div class="card-head"><h3>① 快速开始</h3></div>
+          <p class="guide-p">模型网关是一个 <b>OpenAI 兼容</b>的统一入口：把多个上游供应商（Qoder、MOSS、DeepSeek……）聚合成本地平台模型，提供密钥池轮换、故障转移、并发/限流、统计与日志。</p>
           <ol class="guide-steps">
-            <li>在「密钥」页创建并复制客户端 API Key（<code>sk-…</code>）。</li>
-            <li>确定接入地址：Base URL = <code><b class="g-origin">http://&lt;host&gt;:2325</b>/v1</code>。</li>
-            <li>在「平台模型」页确认对外模型名（业务名或别名均可），按下方案例调用。</li>
+            <li><b>添加供应商</b>：「供应商」页 → 新增供应商，填名称、Base URL、API Key（可多把组成密钥池）。</li>
+            <li><b>导入模型</b>：点「获取模型列表」拉取上游可用模型，勾选导入。</li>
+            <li><b>创建平台模型</b>：「平台模型」页 → 新增，对外名称（业务名）+ 选择成员（供应商 › 模型），设权重与优先级。</li>
+            <li><b>发客户端密钥</b>：「密钥」页 → 新建密钥，复制 <code>sk-…</code> 给调用方。</li>
+            <li><b>调用验证</b>：平台模型列表点 <b>⚡测试</b>，或直接用下方 curl/SDK 示例。</li>
           </ol>
+          <p class="guide-p">接入地址：<code><b class="g-origin">http://&lt;host&gt;:2325</b>/v1</code>（本页所有示例中的地址会自动替换成你当前访问的地址）。</p>
         </div>
-        <div class="card">
-          <div class="card-head"><h3>② curl 调用示例</h3></div>
+        <div class="card" id="g-2">
+          <div class="card-head"><h3>② 调用方式</h3></div>
           <p class="guide-p">查看可用模型：</p>
           <pre class="guide-pre">curl <span class="g-origin">http://localhost:2325</span>/v1/models -H "Authorization: Bearer sk-你的密钥"</pre>
           <p class="guide-p">对话（非流式）：</p>
@@ -471,13 +494,11 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
   -H "Authorization: Bearer sk-你的密钥" \
   -H "Content-Type: application/json" \
   -d '{"model":"smart-fast","messages":[{"role":"user","content":"你好"}]}'</pre>
-          <p class="guide-p">对话（流式，SSE 增量输出，最后一块带 usage）：</p>
+          <p class="guide-p">对话（流式，SSE 增量输出；统计 tokens 需在请求里带 <code>stream_options:{"include_usage":true}</code>，最后一块会带 usage）：</p>
           <pre class="guide-pre">curl <span class="g-origin">http://localhost:2325</span>/v1/chat/completions \
   -H "Authorization: Bearer sk-你的密钥" -H "Content-Type: application/json" \
-  -d '{"model":"smart-fast","stream":true,"messages":[{"role":"user","content":"你好"}]}'</pre>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>③ Python（OpenAI SDK）示例</h3></div>
+  -d '{"model":"smart-fast","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"你好"}]}'</pre>
+          <p class="guide-p">Python（OpenAI SDK，base_url 换成网关地址即可无缝接入）：</p>
           <pre class="guide-pre">from openai import OpenAI
 
 client = OpenAI(base_url="<span class="g-origin">http://localhost:2325</span>/v1", api_key="sk-你的密钥")
@@ -487,28 +508,83 @@ resp = client.chat.completions.create(
     # stream=True,                                       # 需要流式时打开
 )
 print(resp.choices[0].message.content)</pre>
+          <p class="guide-p">说明：<code>model</code> 填平台模型的「对外名称」或任一别名；鉴权用「密钥」页创建的客户端密钥，不是上游供应商的 key。</p>
         </div>
-        <div class="card">
-          <div class="card-head"><h3>④ 接入新供应商（5 步）</h3></div>
+        <div class="card" id="g-3">
+          <div class="card-head"><h3>③ 供应商管理</h3></div>
           <ol class="guide-steps">
-            <li>「供应商」页 → 新增供应商：填名称、Base URL、API Key（可填多把 Key 组成密钥池）。</li>
-            <li>点「获取模型列表」拉取上游目录，勾选要导入的模型。</li>
-            <li>「平台模型」页 → 新增/编辑平台模型，添加成员：选 供应商 › 模型，设权重（分流比例）与优先级（故障转移顺序）。</li>
-            <li>在平台模型列表点 <b>⚡测试</b> 验证整条链路连通性。</li>
-            <li>把 Base URL + 密钥 + 平台模型名交给调用方，完成。</li>
+            <li><b>新增</b>：填名称、Base URL（自动补 <code>/v1</code>）、API Key（每行一个，多把自动组成密钥池）。</li>
+            <li><b>获取模型列表</b>：拉取上游 <code>/v1/models</code> 目录，勾选导入到本地模型库。</li>
+            <li><b>启用/停用</b>：点击状态徽章切换；停用后不参与任何调用，其成员自动故障转移到其他供应商。</li>
+            <li><b>密钥</b>：进入密钥池管理每把 key 的权重、最大并发与限流（见⑤）。</li>
+            <li><b>删除</b>：删除供应商不影响已导入的模型记录，但相关成员将不可用。</li>
           </ol>
         </div>
-        <div class="card">
-          <div class="card-head"><h3>⑤ 模型测试与常见错误</h3></div>
-          <p class="guide-p">平台模型列表每行的「测试」按钮会按<b>真实调用链</b>（成员选择 → 密钥池轮换 → 故障转移）发一条小消息，返回时延、tokens 与回复摘要；测试请求会计入统计。</p>
-          <p class="guide-p">常见错误速查：</p>
+        <div class="card" id="g-4">
+          <div class="card-head"><h3>④ 平台模型与负载策略</h3></div>
+          <p class="guide-p">平台模型 = 对外提供的业务模型名。它由若干「成员」（供应商 › 具体模型）组成，请求按策略在成员间分流，失败时按优先级转移。</p>
+          <p class="guide-p"><b>字段说明：</b></p>
+          <ul class="guide-steps">
+            <li><b>对外名称</b>：客户端 <code>model</code> 参数填的名字；<b>别名</b>：逗号分隔的等价名，同样能路由到本模型。</li>
+            <li><b>负载策略</b>：<code>round-robin</code> 加权轮询（按权重分流）；<code>sticky</code> 会话粘性（同会话尽量命中同一成员，配合黏性上限）；<code>least-inflight</code> 最少并发（把新请求发给当前最空闲的成员）。</li>
+            <li><b>黏性上限</b>：仅 sticky 生效，同一会话连续命中同一成员的请求数超过该值后重新选路，0=不限。</li>
+            <li><b>最大重试成员数</b>：一次请求最多尝试几个成员（默认 3）。</li>
+            <li><b>成员权重</b>：分流比例；<b>优先级</b>：故障转移顺序，数字小者优先；<b>启用</b>：关闭的成员不参与分流，只做备份。</li>
+          </ul>
+          <p class="guide-p">例：A(权重 3, 优先级 0) + B(权重 1, 优先级 1) → 约 75% 请求走 A；A 失败/冷却/满载时转 B。</p>
+        </div>
+        <div class="card" id="g-5">
+          <div class="card-head"><h3>⑤ 密钥池：并发与限流</h3></div>
+          <p class="guide-p">同一供应商的多把 key 按权重轮询分流；单 key 失败（401/402/403/408/429/5xx/网络错误）自动冷却并轮换下一把，冷却结束自动回归。</p>
+          <p class="guide-p"><b>每把 key 可设三项限流参数（0=不限）：</b></p>
+          <ul class="guide-steps">
+            <li><b>最大并发</b>：该 key 同时处理的上限。新请求选 key 时跳过已满载的 key，自动落到下一把；<b>全部 key 满载时返回 429</b>（请稍后重试）。面板新建的 key 默认 3。</li>
+            <li><b>限流次数 + 窗口(秒)</b>：滑动时间窗限流，例如 5 次/10 秒 = 该 key 在任意 10 秒内最多 5 次请求；超限同样自动跳下一把，且不计入失败冷却。</li>
+          </ul>
+          <p class="guide-p">列表里的「并发」徽章实时显示 当前并发/上限。被限流跳过不会写失败日志，只有真正发出的请求才记录。</p>
+        </div>
+        <div class="card" id="g-6">
+          <div class="card-head"><h3>⑥ 客户端 API 密钥</h3></div>
+          <p class="guide-p">「密钥」页创建的是<b>调用方密钥</b>（<code>sk-…</code>），用于鉴权网关本身，与上游供应商的 key 无关。支持备注、复制、删除；先填备注再点「新建密钥」。</p>
+        </div>
+        <div class="card" id="g-7">
+          <div class="card-head"><h3>⑦ 统计页说明</h3></div>
+          <ul class="guide-steps">
+            <li><b>请求数</b>：按「尝试次数」计（含失败尝试与密钥轮换），会略高于业务请求量。</li>
+            <li><b>错误数</b>：失败尝试的次数；成功率 = (请求数-错误数)/请求数。</li>
+            <li><b>输入/输出 tokens</b>：上游返回的 usage 口径（输入=提示词，输出=补全）；<b>总 tokens</b> = 输入+输出；大数自动显示为 万/亿，悬停可看精确值。</li>
+            <li><b>平均缓存率</b>：缓存命中 tokens ÷ 输入 tokens。</li>
+            <li><b>范围</b>：今天 / 近7天 / 近30天 / 全部 / 自定义起止；统计页每 10 秒自动刷新（仅页签激活时），也可点「刷新」手动刷。</li>
+            <li><b>用量明细</b>：按 日期 × 供应商 × 平台模型 汇总。</li>
+          </ul>
+        </div>
+        <div class="card" id="g-8">
+          <div class="card-head"><h3>⑧ 日志与调试</h3></div>
+          <ul class="guide-steps">
+            <li>日志记录每次尝试：时间、客户端密钥、平台模型、供应商、上游模型、上游密钥、延迟、tokens、结果与错误信息。</li>
+            <li>支持服务端分页与按条件筛选；保存天数在「设置」里调整（默认 30 天，过期自动清理）。</li>
+            <li><b>调试模式</b>（设置页开关）：开启后记录客户端与上游的完整请求/响应报文（各截断 8KB），日志详情里可查看，排障用；默认关闭。</li>
+          </ul>
+        </div>
+        <div class="card" id="g-9">
+          <div class="card-head"><h3>⑨ 系统设置</h3></div>
+          <ul class="guide-steps">
+            <li><b>管理密码</b>：面板登录密码。</li>
+            <li><b>日志保存天数</b>：请求日志与统计的保留期，超期自动清理。</li>
+            <li><b>调试模式</b>：记录完整报文，排障时打开，平时建议关闭。</li>
+          </ul>
+        </div>
+        <div class="card" id="g-10">
+          <div class="card-head"><h3>⑩ 错误码速查</h3></div>
           <ul class="guide-steps">
             <li><code>401 invalid_api_key</code>：客户端密钥不对，去「密钥」页核对。</li>
             <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
+            <li><code>429 rate_limited</code>：所有 key 的并发/时间窗限流都已满，稍后重试，或提高 key 的上限 / 增加密钥。</li>
+            <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」或「日志」看具体上游错误。</li>
             <li><code>503 no_available_member</code>：平台模型没有启用成员，或所有成员正在冷却。</li>
-            <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」看具体上游错误。</li>
-            <li>「日志」页可查全部请求记录；开启「设置 → 调试模式」后，每条日志可点「详情」查看请求/响应报文。</li>
           </ul>
+          <p class="guide-p">更多问题：先看「日志」页错误信息，再开「调试模式」复现一次，基本都能定位。</p>
+        </div>
         </div>
       </div>
     </section>
@@ -998,7 +1074,19 @@ async function showKeys(id){
 }
 async function renderKeys(){
   const list=await api('/admin/api/providers/'+CUR_PROV+'/keys');
-  document.getElementById('keyList').innerHTML=list.map(k=>`
+  const head=`<div class="mitem" style="color:var(--muted,#6b7280);font-size:11px;padding-bottom:2px">
+    <span style="width:18px;text-align:center">启</span>
+    <span class="nm" style="color:var(--muted,#6b7280)">密钥</span>
+    <span class="caps" style="margin-left:auto;display:flex;gap:6px;align-items:center;text-align:center">
+      <span style="width:110px">备注</span>
+      <span style="width:56px">权重</span>
+      <span style="width:64px">最大并发</span>
+      <span style="width:56px">限流次数</span>
+      <span style="width:56px">窗口(秒)</span>
+      <span style="width:30px">删除</span>
+    </span>
+  </div>`;
+  document.getElementById('keyList').innerHTML=head+list.map(k=>`
     <div class="mitem">
       <input type="checkbox" ${k.disabled?'':'checked'} title="启用" onchange="updKey('${esc(k.key)}',{disabled:!this.checked})">
       <span class="nm mono" title="${esc(k.key)}">${esc(k.key.length>16?k.key.slice(0,10)+'…'+k.key.slice(-4):k.key)}</span>
@@ -1356,6 +1444,9 @@ async function runModelTest(){
 function renderGuide(){
   const origin=location.origin&&location.origin!=='null'?location.origin:('http://'+location.host);
   document.querySelectorAll('#v-guide .g-origin').forEach(el=>{el.textContent=origin});
+  document.querySelectorAll('#guideToc a').forEach(a=>{
+    a.onclick=()=>{const el=document.getElementById(a.dataset.t);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})};
+  });
 }
 
 /* ── 统计页自动刷新：仅当前在统计页且浏览器页签激活时；切回前台立即刷新一次 ── */
