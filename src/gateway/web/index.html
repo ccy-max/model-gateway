@@ -1211,9 +1211,10 @@ function ssRender(items){
   list.style.display='block';
   list.querySelectorAll('.ss-item:not(.ss-none)').forEach(el=>{
     el.addEventListener('mousedown',ev=>{ev.preventDefault();
+      const pick=SSSTATE.onPick; // 先取回调：ssClose 会清空 SSSTATE
       input.value=el.textContent;
       ssClose();
-      if(SSSTATE.onPick)SSSTATE.onPick(el.textContent);
+      if(pick)pick(el.textContent);
     });
   });
 }
