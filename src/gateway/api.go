@@ -2180,5 +2180,20 @@ func (s *Server) Routes() http.Handler {
 		http.NotFound(w, r)
 	})
 
-	return s.corsMiddleware(mux)
+	return s.timingMiddleware(s.corsMiddleware(mux))
+}
+
+// timingMiddleware 记录慢请求（>800ms），用于区分「服务端慢」与「链路/客户端慢」。
+func (s *Server) timingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		if d := time.Since(start); d > 800*time.Millisecond {
+			ua := r.UserAgent()
+			if len(ua) > 60 {
+				ua = ua[:60]
+			}
+			log.Printf("[slow] %s %s %dms from=%s ua=%q", r.Method, r.URL.Path, d.Milliseconds(), clientIP(r), ua)
+		}
+	})
 }
