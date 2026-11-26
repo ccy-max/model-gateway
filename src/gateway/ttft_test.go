@@ -26,7 +26,7 @@ func (c *chunkReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func sseResp(chunks ...string) *http.Response {
+func sseResp(delay time.Duration, chunks ...string) *http.Response {
 	raw := make([][]byte, len(chunks))
 	for i, s := range chunks {
 		raw[i] = []byte(s)
@@ -34,13 +34,13 @@ func sseResp(chunks ...string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(&chunkReader{chunks: raw, delay: 50 * time.Millisecond}),
+		Body:       io.NopCloser(&chunkReader{chunks: raw, delay: delay}),
 	}
 }
 
-// TestStreamTTFTCaptured 首块即内容 → ttft 约为一个块间隔（~50ms）。
+// TestStreamTTFTCaptured 首块即内容 → ttft 约为一个块间隔（120ms）。
 func TestStreamTTFTCaptured(t *testing.T) {
-	resp := sseResp(
+	resp := sseResp(120*time.Millisecond,
 		"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
 		"data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
 		"data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
@@ -52,15 +52,15 @@ func TestStreamTTFTCaptured(t *testing.T) {
 	if p != 10 || c != 2 {
 		t.Fatalf("usage 解析错误: %d/%d", p, c)
 	}
-	if ttft < 30 || ttft > 200 {
-		t.Fatalf("首块即内容时 ttft 应约 50ms，实际 %dms", ttft)
+	if ttft < 100 || ttft > 1500 {
+		t.Fatalf("首块即内容时 ttft 应约 120ms，实际 %dms", ttft)
 	}
 }
 
-// TestStreamTTFTIgnoresRoleOnlyChunk 首块只有 role（无内容）→ 首字应算在第二块（~100ms），
-// 而不是第一块（~50ms），验证「只认内容块」。
+// TestStreamTTFTIgnoresRoleOnlyChunk 首块只有 role（无内容）→ 首字应算在第二块（约 240ms），
+// 而不是第一块（约 120ms），验证「只认内容块」。
 func TestStreamTTFTIgnoresRoleOnlyChunk(t *testing.T) {
-	resp := sseResp(
+	resp := sseResp(120*time.Millisecond,
 		"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
 		"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
 	)
@@ -68,14 +68,14 @@ func TestStreamTTFTIgnoresRoleOnlyChunk(t *testing.T) {
 	s := NewServer(st, "test")
 	w := httptest.NewRecorder()
 	_, _, _, ttft := s.streamToClient(w, resp, time.Now())
-	if ttft < 80 {
-		t.Fatalf("role-only 块不应计首字，ttft 应约 100ms，实际 %dms", ttft)
+	if ttft < 190 {
+		t.Fatalf("role-only 块不应计首字，ttft 应约 240ms，实际 %dms", ttft)
 	}
 }
 
 // TestStreamTTFTReasoningCounts 推理块（reasoning_content）也算首字前的内容输出。
 func TestStreamTTFTReasoningCounts(t *testing.T) {
-	resp := sseResp(
+	resp := sseResp(120*time.Millisecond,
 		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\n",
 		"data: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\n",
 	)
@@ -83,7 +83,7 @@ func TestStreamTTFTReasoningCounts(t *testing.T) {
 	s := NewServer(st, "test")
 	w := httptest.NewRecorder()
 	_, _, _, ttft := s.streamToClient(w, resp, time.Now())
-	if ttft > 80 {
-		t.Fatalf("推理块应算首字（~50ms），实际 %dms", ttft)
+	if ttft > 260 {
+		t.Fatalf("推理块应算首字（约 120ms），实际 %dms", ttft)
 	}
 }

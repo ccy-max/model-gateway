@@ -133,6 +133,7 @@ type DailyStat struct {
 	CachedTok  int64  `json:"cached_tokens,omitempty"` // 输入侧缓存命中 tokens
 	LatencySum int64  `json:"latency_ms_sum"`
 	TTFTSum    int64  `json:"ttft_ms_sum,omitempty"` // 流式首字时间累计（非流式/失败为 0）
+	TTFTN      int64  `json:"ttft_n,omitempty"`      // 有首字记录的请求数（仅流式），用于平均
 }
 
 // RequestLog 单次请求日志。

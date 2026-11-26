@@ -830,9 +830,9 @@ function decodeSpeed(completionTokens,latencySum,ttftSum){
   const span=(tt>0&&lat-tt>0)?lat-tt:lat;
   return tokSpeed(completionTokens,span);
 }
-// 平均首字时间；无流式样本时显示 '-'
-function avgTTFT(ttftSum,requests){
-  const tt=Number(ttftSum)||0, n=Number(requests)||0;
+// 平均首字时间（仅统计有首字记录的流式请求）；无样本时显示 '-'
+function avgTTFT(ttftSum,ttftN){
+  const tt=Number(ttftSum)||0, n=Number(ttftN)||0;
   if(tt<=0||n<=0)return '-';
   return Math.round(tt/n)+' ms';
 }
@@ -944,7 +944,7 @@ async function loadStats(){
     <td>${r.errors?`<span class="badge badge-err">${r.errors}</span>`:'<span class="badge badge-ok">0</span>'}</td>
     <td title="${r.prompt_tokens}">${fmtNum(r.prompt_tokens)}</td><td title="${r.completion_tokens}">${fmtNum(r.completion_tokens)}</td><td title="${r.cached_tokens||0}">${fmtNum(r.cached_tokens||0)}</td>
     <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td>
-    <td>${avgTTFT(r.ttft_ms_sum,r.requests)}</td>
+    <td>${avgTTFT(r.ttft_ms_sum,r.ttft_n)}</td>
     <td title="解码耗时 = 累计耗时 ${((r.latency_ms_sum||0)/1000).toFixed(1)}s − 首字 ${((r.ttft_ms_sum||0)/1000).toFixed(1)}s">${decodeSpeed(r.completion_tokens,r.latency_ms_sum,r.ttft_ms_sum)}</td></tr>`).join('')
     ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求</div></td></tr>';
   document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
