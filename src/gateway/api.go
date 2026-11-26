@@ -337,7 +337,7 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 	tried := 0
 	lastErr := "无可用成员"
 	allSaturated := true
-	for idx, cd := range order {
+	for _, cd := range order {
 		if tried >= maxRetry {
 			break
 		}
@@ -346,13 +346,16 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 			continue
 		}
 		tried++
-		// 该次尝试是否为本次业务请求的最后一次（成功或最终失败），用于业务请求口径统计
-		isFinal := tried >= maxRetry || idx == len(order)-1
-		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings, debugReq, reqID, isFinal)
+		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings, debugReq, reqID)
 		if res.handled {
-			if res.status == http.StatusOK && stickyKey != "" && pm.Strategy == "sticky" {
-				s.router.RecordSticky(stickyKey, cd.Key)
+			if res.status == http.StatusOK {
+				if stickyKey != "" && pm.Strategy == "sticky" {
+					s.router.RecordSticky(stickyKey, cd.Key)
+				}
+				return
 			}
+			// 不可转移的 4xx：本次业务请求以失败收尾
+			s.db.FinalizeAttempt(reqID)
 			return
 		}
 		if !res.saturated {
@@ -362,9 +365,11 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 	}
 	if allSaturated && tried > 0 {
 		// 所有成员的密钥并发/限流都已满：按约定返回 429，由客户端稍后重试
+		s.db.FinalizeAttempt(reqID)
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "所有密钥并发/限流已满，请稍后重试")
 		return
 	}
+	s.db.FinalizeAttempt(reqID)
 	writeErr(w, http.StatusBadGateway, "all_members_failed", fmt.Sprintf("尝试 %d 个成员均失败: %s", tried, lastErr))
 }
 
@@ -383,14 +388,14 @@ type attemptResult struct {
 // 全部 key 失败才把该成员判为失败（handled=false，交回成员级故障转移）。
 // 超时策略：首字超时/网络错误按配置在同 key 上重试，重试用尽再换 key、换供应商。
 // 非 key 级 4xx（如 400/404 请求本身有误）直接写回客户端，不再轮换。
-func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq, reqID string, final bool) attemptResult {
+func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq, reqID string) attemptResult {
 	memberKey := pm.ID + "|" + pmod.ID
 	s.router.Inflight(memberKey, 1)
 	defer s.router.Inflight(memberKey, -1)
 
 	keys := prov.EnabledKeys()
 	if len(keys) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "", reqID, final)
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "", reqID, false)
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
 	}
 
@@ -424,7 +429,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		byCand[ck] = k
 	}
 	if len(cands) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "", reqID, final)
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "", reqID, false)
 		return attemptResult{handled: false, saturated: true, errMsg: prov.Name + ": 全部密钥并发已满"}
 	}
 	order := s.router.Pick(cands, "round-robin", "", 0)
@@ -455,7 +460,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		call := &keyCall{
 			r: r, w: w, prov: prov, pmod: pmod, pm: pm, up: up, pk: pk, keyMask: keyMask, candKey: cd.Key,
 			payload: payload, wantStream: wantStream, keyNote: keyNote, settings: settings,
-			clientReq: clientReq, reqID: reqID, final: final,
+			clientReq: clientReq, reqID: reqID,
 			firstByteSec: firstByteSec, stallSec: stallSec,
 		}
 		res := attemptResult{}
@@ -496,7 +501,6 @@ type keyCall struct {
 	settings   Settings
 	clientReq  string
 	reqID      string
-	final      bool
 	firstByteSec, stallSec int
 }
 
@@ -527,7 +531,7 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 			msg = lbl
 		}
 		dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, 0, nil)
-		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 		return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
 	}
 
@@ -552,7 +556,7 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 					msg = lbl
 				}
 				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
-				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 				if committed {
 					// 已经向客户端输出过内容：只能中止，不能重试/转移
 					resp.Body.Close()
@@ -579,7 +583,7 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 				}
 				resp.Body.Close()
 				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
-				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 				s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
 				s.router.MarkProviderFailure(c.prov.ID, 3, 60)
 				return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
@@ -599,7 +603,7 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 	failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
 		resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
 	dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, body)
-	s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, c.reqID, c.final)
+	s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, c.reqID, false)
 	switch {
 	case resp.StatusCode == http.StatusPaymentRequired:
 		// 余额/额度耗尽（402）：整个供应商跳过一段时间，避免每次请求都白打一圈密钥

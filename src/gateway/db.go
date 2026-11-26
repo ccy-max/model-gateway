@@ -183,6 +183,39 @@ ON CONFLICT(day,provider_id,model) DO UPDATE SET
 	}
 }
 
+// FinalizeAttempt 把某次业务请求的最后一条尝试标记为 final（成功已由写入方直接标记）。
+// 用于「重试/换密钥/换供应商全部失败」后收尾，保证一次客户端请求只计 1 次业务请求。
+// 幂等：最后一条已是 final=1 时不做任何事。
+func (d *DB) FinalizeAttempt(reqID string) {
+	if reqID == "" {
+		return
+	}
+	var id, ts, status int64
+	var providerID, model string
+	err := d.db.QueryRow(`SELECT id, ts, provider_id, model, status FROM request_logs
+WHERE req_id=? ORDER BY id DESC LIMIT 1`, reqID).Scan(&id, &ts, &providerID, &model, &status)
+	if err != nil {
+		return
+	}
+	var fin int
+	if err := d.db.QueryRow(`SELECT final FROM request_logs WHERE id=?`, id).Scan(&fin); err != nil || fin == 1 {
+		return
+	}
+	if _, err := d.db.Exec(`UPDATE request_logs SET final=1 WHERE id=?`, id); err != nil {
+		log.Printf("[db] 标记业务请求收尾失败: %v", err)
+		return
+	}
+	day := time.Unix(ts, 0).Format("2006-01-02")
+	cfail := 0
+	if status == 1 {
+		cfail = 1
+	}
+	if _, err := d.db.Exec(`UPDATE daily_stats SET creq=creq+1, cfail=cfail+? WHERE day=? AND provider_id=? AND model=?`,
+		cfail, day, providerID, model); err != nil {
+		log.Printf("[db] 更新业务请求计数失败: %v", err)
+	}
+}
+
 // QueryStats 按日期范围（闭区间）取明细与汇总。
 func (d *DB) QueryStats(from, to string) (rows []DailyStat, reqs, errs, ptok, ctok, cktok int64) {
 	rows = []DailyStat{}
