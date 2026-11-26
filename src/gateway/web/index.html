@@ -303,13 +303,13 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
           <div class="card-head"><h3 id="statRowsTitle">用量明细 · 按 日期 × 供应商 × 平台模型</h3></div>
           <div id="probeResult" style="margin-bottom:12px"></div>
           <div class="table-wrap">
-            <table id="statTable"><thead><tr><th>日期</th><th>供应商</th><th>平台模型</th><th>请求</th><th>错误</th><th>输入 tokens</th><th>输出 tokens</th><th>缓存 tokens</th><th>平均延迟</th></tr></thead><tbody></tbody></table>
+            <table id="statTable"><thead><tr><th>日期</th><th>供应商</th><th>平台模型</th><th>请求</th><th>错误</th><th>输入 tokens</th><th>输出 tokens</th><th>缓存 tokens</th><th>平均延迟</th><th>速度 (tok/s)</th></tr></thead><tbody></tbody></table>
           </div>
         </div>
         <div class="card">
           <div class="card-head"><h3>最近请求</h3></div>
           <div class="table-wrap">
-            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
+            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>速度 (tok/s)</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
           </div>
         </div>
       </div>
@@ -557,6 +557,7 @@ print(resp.choices[0].message.content)</pre>
             <li><b>平均缓存率</b>：缓存命中 tokens ÷ 输入 tokens。</li>
             <li><b>范围</b>：今天 / 近7天 / 近30天 / 全部 / 自定义起止；统计页每 10 秒自动刷新（仅页签激活时），也可点「刷新」手动刷。</li>
             <li><b>用量明细</b>：按 日期 × 供应商 × 平台模型 汇总。</li>
+            <li><b>速度 (tok/s)</b>：输出 tokens ÷ 耗时。用量明细行为该分组内累计输出 ÷ 累计耗时（含排队与首字等待，受并发影响）；最近请求行为单个请求的 输出 tokens ÷ 该请求延迟。</li>
           </ul>
         </div>
         <div class="card" id="g-8">
@@ -813,6 +814,14 @@ function fmtNum(n){
   if(abs>=1e4)return (n/1e4).toFixed(1)+' 万';
   return String(n);
 }
+// 生成速度：输出 tokens ÷ 耗时（秒）。聚合行为天级累计耗时，单条为单请求耗时。
+function tokSpeed(completionTokens,ms){
+  ms=Number(ms)||0;
+  if(ms<=0)return '-';
+  const v=(Number(completionTokens)||0)*1000/ms;
+  if(!isFinite(v))return '-';
+  return v>=100?String(Math.round(v)):v.toFixed(1);
+}
 function openModal(id){document.getElementById(id).style.display='flex'}
 function closeModal(id){document.getElementById(id).style.display='none'}
 function toast(msg,err){
@@ -920,14 +929,16 @@ async function loadStats(){
     <td class="muted-xs">${esc(r.day)}</td><td>${esc(r.provider_id)}</td><td>${esc(r.model)}</td><td>${r.requests}</td>
     <td>${r.errors?`<span class="badge badge-err">${r.errors}</span>`:'<span class="badge badge-ok">0</span>'}</td>
     <td title="${r.prompt_tokens}">${fmtNum(r.prompt_tokens)}</td><td title="${r.completion_tokens}">${fmtNum(r.completion_tokens)}</td><td title="${r.cached_tokens||0}">${fmtNum(r.cached_tokens||0)}</td>
-    <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td></tr>`).join('')
-    ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求</div></td></tr>';
+    <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td>
+    <td title="输出 ${r.completion_tokens||0} tokens ÷ 累计耗时 ${((r.latency_ms_sum||0)/1000).toFixed(1)}s">${tokSpeed(r.completion_tokens,r.latency_ms_sum)}</td></tr>`).join('')
+    ||'<tr><td colspan="10"><div class="empty">该范围内暂无请求</div></td></tr>';
   document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
     <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${tokSpeed(l.completion_tokens,l.latency_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
     <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td></tr>`).join('')
-    ||'<tr><td colspan="9"><div class="empty">该范围内暂无请求日志</div></td></tr>';
+    ||'<tr><td colspan="10"><div class="empty">该范围内暂无请求日志</div></td></tr>';
 }
 async function probeAll(){
   document.getElementById('probeResult').innerHTML='<span class="muted-xs">探测中...</span>';
