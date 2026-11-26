@@ -633,8 +633,11 @@ print(resp.choices[0].message.content)</pre>
   <div class="modal" style="max-width:680px">
     <div class="modal-title">上游模型目录 <span class="muted-xs" id="mRemoteProv"></span></div>
     <p class="modal-msg">勾选要接入的模型后导入；非对话模型（嵌入 / 语音 / 绘图等）默认不勾选。</p>
-    <div class="row" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:10px;flex-wrap:wrap;gap:8px">
       <button class="btn btn-outline btn-sm" onclick="selectChatModels()">全选对话模型</button>
+      <button class="btn btn-outline btn-sm" onclick="selectAllModels()">全选</button>
+      <button class="btn btn-outline btn-sm" onclick="invertModelSelection()">反选</button>
+      <span class="muted-xs" id="remoteSelCount" style="margin-left:2px"></span>
       <span class="spacer"></span>
       <button class="btn btn-sm" onclick="importModels()">导入选中</button>
     </div>
@@ -1022,17 +1025,38 @@ const CAP_LABEL={chat:'对话',tools:'工具',reasoning:'推理',vision:'视觉'
 function renderRemote(){
   document.getElementById('remoteList').innerHTML=REMOTE.map((m,i)=>{
     const dis=m.caps.includes('other');
-    return `<label class="mitem"><input type="checkbox" data-i="${i}" ${dis?'':(m.imported?'checked disabled':'checked')}>
+    return `<label class="mitem"><input type="checkbox" data-i="${i}" ${dis?'':(m.imported?'checked disabled':'checked')} onchange="updateRemoteCount()">
       <span class="nm">${esc(m.id)}</span>
       ${m.imported?'<span class="badge badge-muted">已导入</span>':''}
       <span class="caps">${m.caps.map(c=>`<span class="badge ${c==='other'?'badge-warn':'badge-muted'}">${CAP_LABEL[c]||c}</span>`).join('')}</span></label>`;
   }).join('')||'<div style="padding:14px" class="muted-xs">上游未返回任何模型</div>';
+  updateRemoteCount();
+}
+// 可勾选的复选框（排除禁用项：已导入 / 非对话）
+function selectableRemoteCbs(){
+  return [...document.querySelectorAll('#remoteList input[type=checkbox]')].filter(cb=>!cb.disabled);
+}
+function updateRemoteCount(){
+  const el=document.getElementById('remoteSelCount');
+  if(!el)return;
+  const cbs=selectableRemoteCbs();
+  const sel=cbs.filter(cb=>cb.checked).length;
+  el.textContent=cbs.length?`已选 ${sel} / ${cbs.length}`:'';
 }
 function selectChatModels(){
   document.querySelectorAll('#remoteList input[type=checkbox]').forEach(cb=>{
     if(cb.disabled)return;
     cb.checked=!REMOTE[+cb.dataset.i].caps.includes('other');
   });
+  updateRemoteCount();
+}
+function selectAllModels(){
+  selectableRemoteCbs().forEach(cb=>cb.checked=true);
+  updateRemoteCount();
+}
+function invertModelSelection(){
+  selectableRemoteCbs().forEach(cb=>cb.checked=!cb.checked);
+  updateRemoteCount();
 }
 async function importModels(){
   const ids=[];
