@@ -179,7 +179,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
   .login-brand::after{content:"";position:absolute;inset-block:12px;right:0;width:1px;background:linear-gradient(to bottom,transparent,var(--border) 12%,var(--border) 88%,transparent)}
 }
 .overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(8,10,14,.4);backdrop-filter:blur(3px)}
-.modal{width:100%;max-width:420px;background:var(--popover);border:1px solid color-mix(in oklab,var(--border) 80%,transparent);border-radius:14px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.28);animation:pop .16s ease-out}
+.modal{width:100%;max-width:420px;background:var(--popover);border:1px solid color-mix(in oklab,var(--border) 80%,transparent);border-radius:14px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.28);animation:pop .16s ease-out;max-height:min(90vh,900px);overflow-y:auto}
 .modal-title{font-size:var(--fs-lg);font-weight:600;margin-bottom:6px}
 .modal-msg{font-size:var(--fs-sm);color:var(--muted-fg);line-height:1.65;margin-bottom:18px}
 .modal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
