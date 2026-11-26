@@ -31,6 +31,13 @@ type stickyEntry struct {
 	seen time.Time
 }
 
+// providerState 供应商级运行时状态（进程内）：额度耗尽（402）与连续失败熔断。
+type providerState struct {
+	exhaustedUntil time.Time // 额度耗尽：到期前整体跳过
+	breakerUntil   time.Time // 熔断：到期前整体跳过（到期后放行一次作为半开探测）
+	consecFails    int
+}
+
 // Router 成员选路器：加权轮询 / 优先级故障转移 / 失败冷却 / 会话粘性 / 最少并发。
 //
 // 熔断语义：连续失败进入指数冷却（base*2^(n-1)，封顶 max），冷却到期即恢复
@@ -38,6 +45,7 @@ type stickyEntry struct {
 type Router struct {
 	mu      sync.Mutex
 	states  map[string]*memberState
+	provs   map[string]*providerState
 	sticky  map[string]*stickyEntry
 	nowFunc func() time.Time
 }
@@ -46,6 +54,7 @@ type Router struct {
 func NewRouter() *Router {
 	return &Router{
 		states:  map[string]*memberState{},
+		provs:   map[string]*providerState{},
 		sticky:  map[string]*stickyEntry{},
 		nowFunc: time.Now,
 	}
@@ -318,6 +327,124 @@ func (r *Router) CooldownLeft(key string) int {
 		return 0
 	}
 	return int(d.Seconds())
+}
+
+// ---------- 供应商级：额度耗尽 / 熔断 ----------
+
+// pstate 取供应商状态（须持锁调用）。
+func (r *Router) pstate(id string) *providerState {
+	st, ok := r.provs[id]
+	if !ok {
+		st = &providerState{}
+		r.provs[id] = st
+	}
+	return st
+}
+
+// MarkExhausted 标记供应商额度耗尽（402/余额不足），sec 秒内整体跳过。
+func (r *Router) MarkExhausted(providerID string, sec int) {
+	if sec <= 0 {
+		sec = 1800
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pstate(providerID).exhaustedUntil = r.nowFunc().Add(time.Duration(sec) * time.Second)
+}
+
+// ClearExhausted 手动恢复（面板「恢复」按钮）。
+func (r *Router) ClearExhausted(providerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.provs[providerID]; ok {
+		st.exhaustedUntil = time.Time{}
+	}
+}
+
+// ClearBreaker 手动恢复熔断。
+func (r *Router) ClearBreaker(providerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok := r.provs[providerID]; ok {
+		st.breakerUntil = time.Time{}
+		st.consecFails = 0
+	}
+}
+
+// ExhaustedLeft 剩余额度耗尽跳过秒数（0=未标记）。
+func (r *Router) ExhaustedLeft(providerID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.provs[providerID]
+	if st == nil {
+		return 0
+	}
+	d := st.exhaustedUntil.Sub(r.nowFunc())
+	if d <= 0 {
+		return 0
+	}
+	return int(d.Seconds())
+}
+
+// BreakerLeft 剩余熔断秒数（0=未熔断）。
+func (r *Router) BreakerLeft(providerID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.provs[providerID]
+	if st == nil {
+		return 0
+	}
+	d := st.breakerUntil.Sub(r.nowFunc())
+	if d <= 0 {
+		return 0
+	}
+	return int(d.Seconds())
+}
+
+// MarkProviderFailure 供应商级连续失败计数；达到阈值则熔断 openSec 秒。
+func (r *Router) MarkProviderFailure(providerID string, threshold, openSec int) {
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if openSec <= 0 {
+		openSec = 60
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.pstate(providerID)
+	st.consecFails++
+	if st.consecFails >= threshold {
+		st.breakerUntil = r.nowFunc().Add(time.Duration(openSec) * time.Second)
+		st.consecFails = 0
+	}
+}
+
+// MarkProviderSuccess 供应商级成功：清零连续失败并解除熔断。
+func (r *Router) MarkProviderSuccess(providerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.pstate(providerID)
+	st.consecFails = 0
+	st.breakerUntil = time.Time{}
+}
+
+// ProviderSnapshot 返回供应商运行态：exhausted 剩余秒 / breaker 剩余秒 / 连续失败数。
+func (r *Router) ProviderSnapshot() map[string][3]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string][3]int, len(r.provs))
+	now := r.nowFunc()
+	for id, st := range r.provs {
+		ex := int(st.exhaustedUntil.Sub(now).Seconds())
+		if ex < 0 {
+			ex = 0
+		}
+		br := int(st.breakerUntil.Sub(now).Seconds())
+		if br < 0 {
+			br = 0
+		}
+		out[id] = [3]int{ex, br, st.consecFails}
+	}
+	return out
 }
 
 // Snapshot 返回各成员运行态（并发/连续失败/剩余冷却秒）。

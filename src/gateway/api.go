@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -40,6 +41,17 @@ type Server struct {
 
 	upMu sync.RWMutex
 	ups  map[string]*upstream
+
+	metrics *Metrics // Prometheus 指标（进程内）
+
+	loginMu   sync.Mutex
+	loginFail map[string]*loginFails // 按 IP 的登录失败计数（防爆破）
+}
+
+// loginFails 登录失败节流状态。
+type loginFails struct {
+	fails int
+	until time.Time
 }
 
 // NewServer 创建服务；打开 SQLite 并迁移历史数据（requests.jsonl / 配置内统计）。
@@ -48,8 +60,10 @@ func NewServer(store *Store, version string) *Server {
 		store:    store,
 		router:   NewRouter(),
 		version:  version,
-		sessions: map[string]time.Time{},
-		ups:      map[string]*upstream{},
+		sessions:  map[string]time.Time{},
+		ups:       map[string]*upstream{},
+		metrics:   NewMetrics(),
+		loginFail: map[string]*loginFails{},
 	}
 	dataDir := filepath.Dir(store.Path())
 	db, err := OpenDB(dataDir)
@@ -227,6 +241,7 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 		wantStream = b
 	}
 	stickyKey := stickyKeyFromRequest(r, payload)
+	reqID := newReqID() // 业务请求 ID：同一次客户端请求内的所有尝试共享，用于按「业务请求」统计
 
 	// 构建候选（成员→供应商模型→供应商 全链路启用才可用）
 	var cands []attemptInfo
@@ -266,6 +281,32 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 		writeErr(w, http.StatusServiceUnavailable, "no_available_member", "平台模型没有可用成员")
 		return
 	}
+	// 供应商级过滤：额度耗尽（402）与连续失败熔断的供应商整体跳过
+	var usable []attemptInfo
+	skippedExhausted, skippedBreaker := 0, 0
+	for _, a := range cands {
+		if s.router.ExhaustedLeft(a.prov.ID) > 0 {
+			skippedExhausted++
+			continue
+		}
+		if s.router.BreakerLeft(a.prov.ID) > 0 {
+			skippedBreaker++
+			continue
+		}
+		usable = append(usable, a)
+	}
+	if len(usable) == 0 {
+		switch {
+		case skippedExhausted > 0:
+			writeErr(w, http.StatusPaymentRequired, "provider_exhausted", fmt.Sprintf("供应商额度耗尽，已暂停调用（%d 个供应商）", skippedExhausted))
+		case skippedBreaker > 0:
+			writeErr(w, http.StatusServiceUnavailable, "provider_breaker_open", fmt.Sprintf("供应商连续失败，熔断中（%d 个供应商），请稍后重试", skippedBreaker))
+		default:
+			writeErr(w, http.StatusServiceUnavailable, "no_available_member", "平台模型没有可用成员")
+		}
+		return
+	}
+	cands = usable
 
 	var settings Settings
 	s.store.View(func(c *Config) { settings = c.Settings })
@@ -296,7 +337,7 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 	tried := 0
 	lastErr := "无可用成员"
 	allSaturated := true
-	for _, cd := range order {
+	for idx, cd := range order {
 		if tried >= maxRetry {
 			break
 		}
@@ -305,7 +346,9 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 			continue
 		}
 		tried++
-		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings, debugReq)
+		// 该次尝试是否为本次业务请求的最后一次（成功或最终失败），用于业务请求口径统计
+		isFinal := tried >= maxRetry || idx == len(order)-1
+		res := s.tryMember(r, w, a.prov, a.pmod, pm, payload, wantStream, key.Note, settings, debugReq, reqID, isFinal)
 		if res.handled {
 			if res.status == http.StatusOK && stickyKey != "" && pm.Strategy == "sticky" {
 				s.router.RecordSticky(stickyKey, cd.Key)
@@ -340,14 +383,14 @@ type attemptResult struct {
 // 全部 key 失败才把该成员判为失败（handled=false，交回成员级故障转移）。
 // 非 key 级 4xx（如 400/404 请求本身有误）直接写回客户端，不再轮换。
 // clientReq 为调试模式下的客户端请求报文（未开启时为空串）。
-func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq string) attemptResult {
+func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq, reqID string, final bool) attemptResult {
 	memberKey := pm.ID + "|" + pmod.ID
 	s.router.Inflight(memberKey, 1)
 	defer s.router.Inflight(memberKey, -1)
 
 	keys := prov.EnabledKeys()
 	if len(keys) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "")
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "", reqID, final)
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
 	}
 
@@ -367,7 +410,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		byCand[ck] = k
 	}
 	if len(cands) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "")
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "", reqID, final)
 		return attemptResult{handled: false, saturated: true, errMsg: prov.Name + ": 全部密钥并发已满"}
 	}
 	order := s.router.Pick(cands, "round-robin", "", 0)
@@ -399,14 +442,20 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(settings.ChatTimeoutSec)*time.Second)
 		var upReqBody []byte
 		resp, err := up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key, &upReqBody)
+		if err != nil && ctx.Err() == nil {
+			// 网络类失败（非超时/取消）：同 key 有界重试一次，降低单次抖动导致的失败
+			time.Sleep(200 * time.Millisecond)
+			resp, err = up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key, &upReqBody)
+		}
 		latency := time.Since(start).Milliseconds()
 
 		if err != nil {
 			cancel()
 			s.router.Inflight(cd.Key, -1)
 			s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
+			s.router.MarkProviderFailure(prov.ID, 3, 60)
 			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, 0, nil)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err.Error(), dbg)
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err.Error(), dbg, reqID, final)
 			lastErr = fmt.Sprintf("%s(%s): %v", prov.Name, keyMask, err)
 			continue
 		}
@@ -440,15 +489,17 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 					s.router.Inflight(cd.Key, -1)
 					s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
 					dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err2.Error(), dbg)
+					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err2.Error(), dbg, reqID, final)
 					lastErr = fmt.Sprintf("%s(%s): 响应解析失败: %v", prov.Name, keyMask, err2)
 					continue
 				}
 			}
 			s.router.MarkSuccess(cd.Key)
+			s.router.MarkProviderSuccess(prov.ID)
 			s.router.Inflight(cd.Key, -1)
 			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, false, "", dbg)
+			// 成功即本次业务请求的终态，final 恒为 true（与是否为最后一个成员无关）
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, false, "", dbg, reqID, true)
 			cancel()
 			return attemptResult{handled: true, status: http.StatusOK, prompt: prompt, compl: compl}
 		}
@@ -461,7 +512,14 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
 			resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
 		dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, body)
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg)
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, reqID, final)
+		switch {
+		case resp.StatusCode == http.StatusPaymentRequired:
+			// 余额/额度耗尽（402）：整个供应商跳过一段时间，避免每次请求都白打一圈密钥
+			s.router.MarkExhausted(prov.ID, settings.ExhaustedCooldownSec)
+		case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
+			s.router.MarkProviderFailure(prov.ID, 3, 60)
+		}
 		if !failoverable {
 			writeUpstreamError(w, resp.StatusCode, msg)
 			return attemptResult{handled: true, status: resp.StatusCode, errMsg: msg}
@@ -800,14 +858,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 统计与日志 ----------
 
-func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency, ttft int64, prompt, compl, cached int64, isErr bool, errMsg, debug string) {
+func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency, ttft int64, prompt, compl, cached int64, isErr bool, errMsg, debug, reqID string, final bool) {
 	rec := RequestLog{
-		Time: time.Now().Unix(), KeyNote: keyNote, Model: platformName,
+		Time: time.Now().Unix(), ReqID: reqID, Final: final, KeyNote: keyNote, Model: platformName,
 		Provider: prov.Name, ProviderID: prov.ID, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
 		Latency: latency, TTFT: ttft, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
 	}
 	s.db.InsertLog(rec)
-	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency, ttft)
+	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency, ttft, final)
+	s.metrics.Observe(prov.Name, platformName, isErr, latency, ttft, prompt, compl, cached)
+}
+
+// newReqID 生成业务请求 ID（一次客户端请求内所有尝试共享）。
+func newReqID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ---------- 管理端鉴权 ----------
@@ -818,7 +884,47 @@ func (s *Server) newPasswordToken() string {
 	return hex.EncodeToString(b)
 }
 
+const (
+	loginMaxFails   = 5                // 同 IP 连续失败次数上限
+	loginLockWindow = 60 * time.Second // 超过上限后的锁定时间
+)
+
+// clientIP 取客户端 IP（LAN 直连场景取 RemoteAddr；部署在反代后需按其 X-Forwarded-For 配置）。
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	now := time.Now()
+
+	// 防爆破：同 IP 连续失败超过上限后锁定一段时间
+	s.loginMu.Lock()
+	lf := s.loginFail[ip]
+	if lf == nil {
+		lf = &loginFails{}
+		s.loginFail[ip] = lf
+	}
+	if now.Before(lf.until) {
+		retry := int(lf.until.Sub(now).Seconds()) + 1
+		s.loginMu.Unlock()
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		writeErr(w, http.StatusTooManyRequests, "too_many_attempts", fmt.Sprintf("登录失败次数过多，请 %d 秒后重试", retry))
+		return
+	}
+	if len(s.loginFail) > 4096 { // 粗粒度防膨胀
+		for k, v := range s.loginFail {
+			if now.After(v.until) && v.fails == 0 {
+				delete(s.loginFail, k)
+			}
+		}
+	}
+	s.loginMu.Unlock()
+
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -829,9 +935,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var stored string
 	s.store.View(func(c *Config) { stored = c.Password })
 	if stored == "" || subtle.ConstantTimeCompare([]byte(body.Password), []byte(stored)) != 1 {
-		writeErr(w, http.StatusUnauthorized, "bad_password", "密码错误")
+		s.loginMu.Lock()
+		lf = s.loginFail[ip]
+		if lf == nil {
+			lf = &loginFails{}
+			s.loginFail[ip] = lf
+		}
+		lf.fails++
+		if lf.fails >= loginMaxFails {
+			lf.until = now.Add(loginLockWindow)
+			lf.fails = 0
+			s.loginMu.Unlock()
+			writeErr(w, http.StatusTooManyRequests, "too_many_attempts", "登录失败次数过多，已锁定 60 秒")
+			return
+		}
+		left := loginMaxFails - lf.fails
+		s.loginMu.Unlock()
+		writeErr(w, http.StatusUnauthorized, "bad_password", fmt.Sprintf("密码错误（还可尝试 %d 次）", left))
 		return
 	}
+	// 登录成功：清除该 IP 的失败计数
+	s.loginMu.Lock()
+	delete(s.loginFail, ip)
+	s.loginMu.Unlock()
 	token := s.newPasswordToken()
 	s.sessMu.Lock()
 	s.sessions[token] = time.Now().Add(sessionTTL)
@@ -916,8 +1042,10 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		type pv struct {
 			Provider
-			ModelCount int `json:"model_count"`
-			KeyCount   int `json:"key_count"`
+			ModelCount    int `json:"model_count"`
+			KeyCount      int `json:"key_count"`
+			ExhaustedLeft int `json:"exhausted_left,omitempty"` // 额度耗尽剩余秒数（0=正常）
+			BreakerLeft   int `json:"breaker_left,omitempty"`   // 熔断剩余秒数（0=正常）
 		}
 		out := []pv{}
 		s.store.View(func(c *Config) {
@@ -928,7 +1056,9 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 						n++
 					}
 				}
-				out = append(out, pv{Provider: p, ModelCount: n, KeyCount: len(p.EnabledKeys())})
+				snap := s.router.ProviderSnapshot()
+				st := snap[p.ID]
+				out = append(out, pv{Provider: p, ModelCount: n, KeyCount: len(p.EnabledKeys()), ExhaustedLeft: st[0], BreakerLeft: st[1]})
 			}
 		})
 		writeJSON(w, http.StatusOK, out)
@@ -1578,6 +1708,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if i, ok := rowIdx[k]; ok {
 			merged[i].Requests += r.Requests
 			merged[i].Errors += r.Errors
+			merged[i].CReq += r.CReq
+			merged[i].CFail += r.CFail
 			merged[i].PromptTok += r.PromptTok
 			merged[i].ComplTok += r.ComplTok
 			merged[i].CachedTok += r.CachedTok
@@ -1589,12 +1721,18 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	rows = merged
 
+	var creq, cfail int64
+	for _, r := range rows {
+		creq += r.CReq
+		cfail += r.CFail
+	}
+
 	fromTs := dayStartUnix(from)
 	toTs := dayStartUnix(to) + 86400 - 1 // 当天 23:59:59
 	logs := s.db.QueryLogs(fromTs, toTs, 20) // 最近请求只展示 20 条
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from": from, "to": to, "rows": rows,
-		"totals": map[string]any{"requests": reqs, "errors": errs, "prompt_tokens": ptok, "completion_tokens": ctok, "cached_tokens": cktok, "total_tokens": ptok + ctok},
+		"totals": map[string]any{"requests": reqs, "errors": errs, "client_requests": creq, "client_errors": cfail, "prompt_tokens": ptok, "completion_tokens": ctok, "cached_tokens": cktok, "total_tokens": ptok + ctok},
 		"logs":   logs,
 	})
 }
@@ -1694,7 +1832,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.store.Update(func(c *Config) {
 			if body.ChatTimeoutSec > 0 {
-				c.Settings.ChatTimeoutSec = body.ChatTimeoutSec
+				v := body.ChatTimeoutSec
+				if v < 10 {
+					v = 10
+				}
+				if v > 1800 {
+					v = 1800
+				}
+				c.Settings.ChatTimeoutSec = v
+			}
+			if body.ExhaustedCooldownSec > 0 {
+				v := body.ExhaustedCooldownSec
+				if v < 60 {
+					v = 60
+				}
+				if v > 86400 {
+					v = 86400
+				}
+				c.Settings.ExhaustedCooldownSec = v
 			}
 			if body.ModelsTimeoutSec > 0 {
 				c.Settings.ModelsTimeoutSec = body.ModelsTimeoutSec
@@ -1843,6 +1998,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /metrics", s.handleMetrics) // Prometheus 文本指标（LAN 内开放）
 
 	// 管理端鉴权
 	mux.HandleFunc("POST /admin/api/login", s.handleLogin)
@@ -1873,6 +2029,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("POST /admin/api/models/test", s.requireAuth(s.handleModelTest))
 	mux.HandleFunc("/admin/api/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("GET /admin/api/config/export", s.requireAuth(s.handleConfigExport))
+	mux.HandleFunc("POST /admin/api/config/import", s.requireAuth(s.handleConfigImport))
+	mux.HandleFunc("POST /admin/api/providers/{id}/recover", s.requireAuth(s.handleProviderRecover))
 
 	// 内嵌面板
 	mux.HandleFunc("/admin", s.panelHandler)

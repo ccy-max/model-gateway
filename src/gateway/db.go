@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
 	prompt_tokens INTEGER DEFAULT 0,
 	completion_tokens INTEGER DEFAULT 0,
 	cached_tokens INTEGER DEFAULT 0,
+	req_id TEXT DEFAULT '',
+	final INTEGER DEFAULT 0,
 	error TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
@@ -84,6 +86,8 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 	latency_sum INTEGER DEFAULT 0,
 	ttft_sum INTEGER DEFAULT 0,
 	ttft_n INTEGER DEFAULT 0,
+	creq INTEGER DEFAULT 0,
+	cfail INTEGER DEFAULT 0,
 	PRIMARY KEY (day, provider_id, model)
 );`)
 	if err != nil {
@@ -98,6 +102,10 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 		"ALTER TABLE request_logs ADD COLUMN ttft_ms INTEGER DEFAULT 0",
 		"ALTER TABLE daily_stats ADD COLUMN ttft_sum INTEGER DEFAULT 0",
 		"ALTER TABLE daily_stats ADD COLUMN ttft_n INTEGER DEFAULT 0",
+		"ALTER TABLE request_logs ADD COLUMN req_id TEXT DEFAULT ''",
+		"ALTER TABLE request_logs ADD COLUMN final INTEGER DEFAULT 0",
+		"ALTER TABLE daily_stats ADD COLUMN creq INTEGER DEFAULT 0",
+		"ALTER TABLE daily_stats ADD COLUMN cfail INTEGER DEFAULT 0",
 	} {
 		if _, err := d.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -116,11 +124,13 @@ func (d *DB) RebuildStatsFromLogs() {
 		log.Printf("[db] 重算统计-清理旧聚合失败: %v", err)
 		return
 	}
-	if _, err := d.db.Exec(`INSERT INTO daily_stats (day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n)
+	if _, err := d.db.Exec(`INSERT INTO daily_stats (day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n,creq,cfail)
 SELECT date(ts,'unixepoch','localtime') AS day, provider_id, model,
        COUNT(*), SUM(CASE WHEN status=1 THEN 1 ELSE 0 END),
        SUM(prompt_tokens), SUM(completion_tokens), SUM(cached_tokens), SUM(latency_ms), SUM(ttft_ms),
-       SUM(CASE WHEN ttft_ms>0 THEN 1 ELSE 0 END)
+       SUM(CASE WHEN ttft_ms>0 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN final=1 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN final=1 AND status=1 THEN 1 ELSE 0 END)
 FROM request_logs GROUP BY day, provider_id, model`); err != nil {
 		log.Printf("[db] 重算统计失败: %v", err)
 		return
@@ -134,10 +144,10 @@ func (d *DB) Close() { _ = d.db.Close() }
 // InsertLog 追加一条请求日志。
 func (d *DB) InsertLog(r RequestLog) {
 	_, err := d.db.Exec(`INSERT INTO request_logs
-(ts,key_note,model,provider,provider_id,up_model,up_key,status,latency_ms,ttft_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+(ts,key_note,model,provider,provider_id,up_model,up_key,status,latency_ms,ttft_ms,stream,prompt_tokens,completion_tokens,cached_tokens,req_id,final,error,debug)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.Time, r.KeyNote, r.Model, r.Provider, r.ProviderID, r.UpModel, r.UpKey, r.Status, r.Latency, r.TTFT,
-		boolToInt(r.Stream), r.PromptTok, r.ComplTok, r.CachedTok, r.Error, r.Debug)
+		boolToInt(r.Stream), r.PromptTok, r.ComplTok, r.CachedTok, r.ReqID, boolToInt(r.Final), r.Error, r.Debug)
 	if err != nil {
 		log.Printf("[db] 写请求日志失败: %v", err)
 	}
@@ -145,10 +155,17 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
 // UpsertStat 累加一条尝试到每日统计（含失败尝试）。
 // 注意列位：requests 插入即记 1（冲突时 +1），errors 按是否失败记 0/1。
-func (d *DB) UpsertStat(day, providerID, model string, isErr bool, prompt, compl, cached, latency, ttft int64) {
+func (d *DB) UpsertStat(day, providerID, model string, isErr bool, prompt, compl, cached, latency, ttft int64, final bool) {
+	creq, cfail := int64(0), int64(0)
+	if final {
+		creq = 1
+		if isErr {
+			cfail = 1
+		}
+	}
 	_, err := d.db.Exec(`INSERT INTO daily_stats
-(day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n)
-VALUES(?,?,?,1,?,?,?,?,?,?,?)
+(day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n,creq,cfail)
+VALUES(?,?,?,1,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(day,provider_id,model) DO UPDATE SET
 	requests=requests+1,
 	errors=errors+excluded.errors,
@@ -157,8 +174,10 @@ ON CONFLICT(day,provider_id,model) DO UPDATE SET
 	cached_tok=cached_tok+excluded.cached_tok,
 	latency_sum=latency_sum+excluded.latency_sum,
 	ttft_sum=ttft_sum+excluded.ttft_sum,
-	ttft_n=ttft_n+excluded.ttft_n`,
-		day, providerID, model, boolToInt(isErr), prompt, compl, cached, latency, ttft, boolToInt(ttft > 0))
+	ttft_n=ttft_n+excluded.ttft_n,
+	creq=creq+excluded.creq,
+	cfail=cfail+excluded.cfail`,
+		day, providerID, model, boolToInt(isErr), prompt, compl, cached, latency, ttft, boolToInt(ttft > 0), creq, cfail)
 	if err != nil {
 		log.Printf("[db] 更新每日统计失败: %v", err)
 	}
@@ -167,7 +186,7 @@ ON CONFLICT(day,provider_id,model) DO UPDATE SET
 // QueryStats 按日期范围（闭区间）取明细与汇总。
 func (d *DB) QueryStats(from, to string) (rows []DailyStat, reqs, errs, ptok, ctok, cktok int64) {
 	rows = []DailyStat{}
-	rs, err := d.db.Query(`SELECT day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n
+	rs, err := d.db.Query(`SELECT day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum,ttft_n,creq,cfail
 FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 	if err != nil {
 		log.Printf("[db] 查统计失败: %v", err)
@@ -176,7 +195,7 @@ FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 	defer rs.Close()
 	for rs.Next() {
 		var s DailyStat
-		if err := rs.Scan(&s.Day, &s.ProviderID, &s.Model, &s.Requests, &s.Errors, &s.PromptTok, &s.ComplTok, &s.CachedTok, &s.LatencySum, &s.TTFTSum, &s.TTFTN); err == nil {
+		if err := rs.Scan(&s.Day, &s.ProviderID, &s.Model, &s.Requests, &s.Errors, &s.PromptTok, &s.ComplTok, &s.CachedTok, &s.LatencySum, &s.TTFTSum, &s.TTFTN, &s.CReq, &s.CFail); err == nil {
 			rows = append(rows, s)
 			reqs += s.Requests
 			errs += s.Errors

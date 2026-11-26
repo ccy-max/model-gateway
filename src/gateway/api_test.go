@@ -997,7 +997,7 @@ func TestStatsErrorAccounting(t *testing.T) {
 	}
 
 	// 直接记一次失败尝试（另一供应商维度）
-	s.db.UpsertStat(time.Now().Format("2006-01-02"), "p_fail", "fail-model", true, 0, 0, 0, 10, 0)
+	s.db.UpsertStat(time.Now().Format("2006-01-02"), "p_fail", "fail-model", true, 0, 0, 0, 10, 0, true)
 
 	// 登录查统计
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))

@@ -113,12 +113,13 @@ type PlatformModel struct {
 
 // Settings 全局设置。
 type Settings struct {
-	ChatTimeoutSec   int  `json:"chat_timeout_seconds"`
-	ModelsTimeoutSec int  `json:"models_timeout_seconds"`
-	CooldownBaseSec  int  `json:"cooldown_base_seconds"`
-	CooldownMaxSec   int  `json:"cooldown_max_seconds"`
-	DebugPayloads    bool `json:"debug_payloads"`     // 开启后请求日志额外记录请求/响应报文
-	LogRetentionDays int  `json:"log_retention_days"` // 请求日志保留天数（<=0 视为 30）
+	ChatTimeoutSec       int  `json:"chat_timeout_seconds"`        // 上游对话超时；10~1800，默认 600
+	ModelsTimeoutSec     int  `json:"models_timeout_seconds"`      // 拉取上游模型目录超时
+	CooldownBaseSec      int  `json:"cooldown_base_seconds"`       // 密钥失败冷却基数（指数退避）
+	CooldownMaxSec       int  `json:"cooldown_max_seconds"`        // 密钥冷却上限
+	ExhaustedCooldownSec int  `json:"exhausted_cooldown_seconds"`  // 供应商额度耗尽（402）后的整体跳过时长，默认 1800
+	DebugPayloads        bool `json:"debug_payloads"`              // 开启后请求日志额外记录请求/响应报文
+	LogRetentionDays     int  `json:"log_retention_days"`          // 请求日志保留天数（<=0 视为 30）
 }
 
 // DailyStat 单日按 供应商×平台模型 聚合的用量（含失败尝试）。
@@ -131,6 +132,8 @@ type DailyStat struct {
 	PromptTok  int64  `json:"prompt_tokens"`
 	ComplTok   int64  `json:"completion_tokens"`
 	CachedTok  int64  `json:"cached_tokens,omitempty"` // 输入侧缓存命中 tokens
+	CReq       int64  `json:"client_requests,omitempty"` // 业务请求数（一次客户端请求只计 1，attempt 级见 requests）
+	CFail      int64  `json:"client_errors,omitempty"`   // 业务失败数（该客户端请求最终失败才计 1）
 	LatencySum int64  `json:"latency_ms_sum"`
 	TTFTSum    int64  `json:"ttft_ms_sum,omitempty"` // 流式首字时间累计（非流式/失败为 0）
 	TTFTN      int64  `json:"ttft_n,omitempty"`      // 有首字记录的请求数（仅流式），用于平均
@@ -139,6 +142,8 @@ type DailyStat struct {
 // RequestLog 单次请求日志。
 type RequestLog struct {
 	Time       int64  `json:"time"`
+	ReqID      string `json:"req_id,omitempty"`  // 业务请求 ID（一次客户端请求内多个尝试共享）
+	Final      bool   `json:"final,omitempty"`   // 该次尝试是否为业务请求的最后一次（成功或最终失败）
 	KeyNote    string `json:"key_note,omitempty"`
 	Model      string `json:"model"`
 	Provider   string `json:"provider,omitempty"`
@@ -169,8 +174,18 @@ type Config struct {
 
 // Normalize 补齐默认值，保证零值可用。
 func (c *Config) Normalize() {
+	// 对话超时：默认 600s，允许 10~1800s（过大值会让挂起请求长期占用密钥并发槽）
 	if c.Settings.ChatTimeoutSec <= 0 {
-		c.Settings.ChatTimeoutSec = 120
+		c.Settings.ChatTimeoutSec = 600
+	}
+	if c.Settings.ChatTimeoutSec < 10 {
+		c.Settings.ChatTimeoutSec = 10
+	}
+	if c.Settings.ChatTimeoutSec > 1800 {
+		c.Settings.ChatTimeoutSec = 1800
+	}
+	if c.Settings.ExhaustedCooldownSec <= 0 {
+		c.Settings.ExhaustedCooldownSec = 1800
 	}
 	if c.Settings.ModelsTimeoutSec <= 0 {
 		c.Settings.ModelsTimeoutSec = 15
