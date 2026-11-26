@@ -2183,17 +2183,35 @@ func (s *Server) Routes() http.Handler {
 	return s.timingMiddleware(s.corsMiddleware(mux))
 }
 
-// timingMiddleware 记录慢请求（>800ms），用于区分「服务端慢」与「链路/客户端慢」。
+// statusWriter 记录状态码，供诊断日志使用。
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// timingMiddleware 记录慢请求（>800ms）与关键诊断路径（登录/鉴权/统计/面板），
+// 用于区分「服务端慢」与「链路/客户端慢」。
 func (s *Server) timingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		if d := time.Since(start); d > 800*time.Millisecond {
-			ua := r.UserAgent()
-			if len(ua) > 60 {
-				ua = ua[:60]
-			}
-			log.Printf("[slow] %s %s %dms from=%s ua=%q", r.Method, r.URL.Path, d.Milliseconds(), clientIP(r), ua)
+		sw := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(sw, r)
+		d := time.Since(start)
+
+		ua := r.UserAgent()
+		if len(ua) > 60 {
+			ua = ua[:60]
+		}
+		p := r.URL.Path
+		keyPath := p == "/admin/api/login" || p == "/admin/api/auth" || p == "/admin/api/stats" || p == "/" || p == "/admin"
+		if keyPath || d > 800*time.Millisecond {
+			_, hasCookie := r.Cookie(sessionCookie)
+			log.Printf("[req] %s %s %d %dms from=%s cookie=%v ua=%q", r.Method, p, sw.status, d.Milliseconds(), clientIP(r), hasCookie, ua)
 		}
 	})
 }
