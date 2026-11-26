@@ -513,7 +513,8 @@ print(resp.choices[0].message.content)</pre>
         <div class="card" id="g-3">
           <div class="card-head"><h3>③ 供应商管理</h3></div>
           <ol class="guide-steps">
-            <li><b>新增</b>：填名称、Base URL（自动补 <code>/v1</code>）、API Key（每行一个，多把自动组成密钥池）。</li>
+            <li><b>新增</b>：填名称、Base URL（自动补 <code>/v1</code>）、API Key（每行一个，多把自动组成密钥池）；可选「代理」让该供应商的上游调用经代理转发（留空直连）。</li>
+            <li><b>代理</b>：支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>。注意填的必须是「容器网络可达」的地址——网关跑在容器里，<code>127.0.0.1</code> 是容器自身不可用；本机 mihomo 容器请填 <code>http://mihomo:7890</code>（已接入 my-pm 网络）。非法地址自动降级直连并在容器日志提示。</li>
             <li><b>获取模型列表</b>：拉取上游 <code>/v1/models</code> 目录，勾选导入到本地模型库。</li>
             <li><b>启用/停用</b>：点击状态徽章切换；停用后不参与任何调用，其成员自动故障转移到其他供应商。</li>
             <li><b>密钥</b>：进入密钥池管理每把 key 的权重、最大并发与限流（见⑤）。</li>
@@ -605,6 +606,11 @@ print(resp.choices[0].message.content)</pre>
     <div class="form-row">
       <label class="label">Base URL *</label>
       <input id="fProvURL" class="input" placeholder="https://api.deepseek.com">
+    </div>
+    <div class="form-row">
+      <label class="label">代理（可选）</label>
+      <input id="fProvProxy" class="input" placeholder="http://mihomo:7890">
+      <p class="field-hint">该供应商的上游调用经此代理转发，支持 http/https/socks5；留空 = 直连。注意须填「容器网络可达」的地址（127.0.0.1 是容器自身，不可用）；本机 mihomo 容器请用 http://mihomo:7890。</p>
     </div>
     <div class="form-row">
       <label class="label">API Key（每行一个，可配多个做密钥池）</label>
@@ -955,7 +961,7 @@ async function loadProviders(){
   document.querySelector('#provTable tbody').innerHTML=PROVS.map(p=>`<tr>
     <td><b>${esc(p.name)}</b>${p.note?`<div class="muted-xs">${esc(p.note)}</div>`:''}</td>
     <td><span class="badge badge-muted">${esc(p.kind)}</span></td>
-    <td class="muted-xs">${esc(p.base_url)}</td>
+    <td class="muted-xs">${esc(p.base_url)}${p.proxy?`<div style="margin-top:4px"><span class="badge badge-ok" title="上游调用经此代理转发">代理 ${esc(p.proxy)}</span></div>`:''}</td>
     <td>${p.model_count}</td>
     <td><span class="badge ${p.enabled?'badge-ok':'badge-muted'}" style="cursor:pointer" title="${p.enabled?'点击停用':'点击启用'}" onclick="toggleProvider('${p.id}')">${p.enabled?'启用':'停用'}</span></td>
     <td>
@@ -972,6 +978,7 @@ function openProviderModal(id){
   document.getElementById('mProviderTitle').textContent=id?'编辑供应商':'新增供应商';
   document.getElementById('fProvName').value=p.name||'';
   document.getElementById('fProvURL').value=p.base_url||'';
+  document.getElementById('fProvProxy').value=p.proxy||'';
   const keys=(p.keys&&p.keys.length)?p.keys:(p.api_key?[{key:p.api_key}]:[]);
   document.getElementById('fProvKeys').value=keys.map(k=>k.key).join('\n');
   document.getElementById('fProvNote').value=p.note||'';
@@ -987,7 +994,7 @@ async function saveProvider(){
     const prev=old&&(old.keys||[]).find(x=>x.key===k);
     return prev?{key:k,note:prev.note,weight:prev.weight,priority:prev.priority,disabled:prev.disabled}:{key:k,weight:1};
   });
-  const body={name:document.getElementById('fProvName').value.trim(),base_url:document.getElementById('fProvURL').value.trim(),keys,note:document.getElementById('fProvNote').value.trim(),kind:'openai-compat',enabled:true};
+  const body={name:document.getElementById('fProvName').value.trim(),base_url:document.getElementById('fProvURL').value.trim(),proxy:document.getElementById('fProvProxy').value.trim(),keys,note:document.getElementById('fProvNote').value.trim(),kind:'openai-compat',enabled:true};
   if(!body.name||!body.base_url){toast('名称与 Base URL 必填',true);return}
   try{
     if(id){await api('/admin/api/providers/'+id,{method:'PUT',body:JSON.stringify(body)})}

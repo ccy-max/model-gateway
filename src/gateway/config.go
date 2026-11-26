@@ -56,6 +56,9 @@ type Provider struct {
 	Keys    []ProviderKey `json:"keys,omitempty"`
 	Note    string        `json:"note,omitempty"`
 	Enabled bool          `json:"enabled"`
+	// Proxy 上游调用代理地址（http/https/socks5，如 http://mihomo:7890）；
+	// 留空 = 直连。注意：须为容器网络可达地址（127.0.0.1 是容器自身，不可用）。
+	Proxy string `json:"proxy,omitempty"`
 }
 
 // EnabledKeys 返回启用的非空密钥（旧单 Key 字段已由 Normalize 并入）。

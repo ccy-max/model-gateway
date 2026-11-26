@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -18,21 +20,41 @@ type upstream struct {
 	id      string
 	name    string
 	baseURL string
+	tr      *http.Transport
 	http    *http.Client
 }
 
-// newUpstream 规范化 BaseURL（自动补 /v1）并构建客户端。
+// newProxyTransport 克隆 DefaultTransport；proxy 非空且合法时挂 Proxy 函数，
+// 非法地址（无法解析或无 host）记日志并降级直连。
+func newProxyTransport(proxy string) *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	px := strings.TrimSpace(proxy)
+	if px != "" {
+		pu, err := url.Parse(px)
+		if err == nil && pu.Scheme != "" && pu.Host != "" {
+			tr.Proxy = http.ProxyURL(pu)
+		} else {
+			log.Printf("[upstream] 代理地址无效，降级直连: %q", px)
+		}
+	}
+	return tr
+}
+
+// newUpstream 规范化 BaseURL（自动补 /v1）并构建客户端；按 p.Proxy 决定经代理或直连。
 func newUpstream(p Provider, chatTimeout, modelsTimeout time.Duration) *upstream {
 	base := strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	if base != "" && !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
+	tr := newProxyTransport(p.Proxy)
 	return &upstream{
 		id:      p.ID,
 		name:    p.Name,
 		baseURL: base,
+		tr:      tr,
 		http: &http.Client{
-			Timeout: chatTimeout,
+			Timeout:  chatTimeout,
+			Transport: tr,
 		},
 	}
 }
@@ -87,7 +109,7 @@ func (u *upstream) Models(ctx context.Context, key string) ([]remoteModel, error
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 20 * time.Second, Transport: u.tr}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
