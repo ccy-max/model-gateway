@@ -674,12 +674,15 @@ func TestUsageCacheExtraction(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
 	w3 := httptest.NewRecorder()
-	p3, c3, ce3, ttft3 := s.streamToClient(w3, resp3, time.Now())
+	p3, c3, ce3, ttft3, committed3, serr3 := s.streamToClient(w3, resp3, time.Now())
 	if p3 != 50 || c3 != 5 || ce3 != 30 {
 		t.Fatalf("stream expect 50/5/30, got %d/%d/%d", p3, c3, ce3)
 	}
 	if ttft3 < 0 {
 		t.Fatalf("ttft 应为非负，got %d", ttft3)
+	}
+	if serr3 != nil || !committed3 {
+		t.Fatalf("stream 应正常提交: committed=%v err=%v", committed3, serr3)
 	}
 }
 

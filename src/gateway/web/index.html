@@ -425,6 +425,21 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
             <p class="field-hint">请求日志（含调试报文）超过该天数自动清理，默认 30 天；每日统计固定保留 90 天。</p>
           </div>
           <div class="form-row">
+            <label class="label">首字超时（秒，默认 120，-1=关闭）</label>
+            <input id="setFirstByte" class="input input-sm" type="number" style="width:140px">
+            <p class="field-hint">超过该秒数上游仍无任何响应即判超时；超时后自动重试（先同密钥、再换密钥/供应商），能救回不少「偶发卡住」的请求。</p>
+          </div>
+          <div class="form-row">
+            <label class="label">停滞超时（秒，默认 300，-1=关闭）</label>
+            <input id="setStall" class="input input-sm" type="number" style="width:140px">
+            <p class="field-hint">流式输出中途超过该秒数没有新数据即中断；因为已经开始输出，只能中止不能重试。</p>
+          </div>
+          <div class="form-row">
+            <label class="label">超时重试次数（默认 1，0~3）</label>
+            <input id="setRetries" class="input input-sm" type="number" min="0" max="3" style="width:140px">
+            <p class="field-hint">同一把密钥上的重试次数；用尽后按密钥池轮换到下一把，再不行转移给其他供应商。</p>
+          </div>
+          <div class="form-row">
             <label class="label">额度耗尽跳过时长（秒）</label>
             <input id="setExhausted" class="input input-sm" type="number" min="60" max="86400" style="width:140px">
             <p class="field-hint">上游返回 402（余额/额度耗尽）后，整个供应商跳过这么久，避免每次请求都白打一圈密钥；默认 1800 秒（30 分钟），可点击供应商页「恢复」提前解除。</p>
@@ -533,6 +548,7 @@ print(resp.choices[0].message.content)</pre>
             <li><b>启用/停用</b>：点击状态徽章切换；停用后不参与任何调用，其成员自动故障转移到其他供应商。</li>
             <li><b>密钥</b>：进入密钥池管理每把 key 的权重、最大并发与限流（见⑤）。</li>
             <li><b>删除</b>：删除供应商不影响已导入的模型记录，但相关成员将不可用。</li>
+            <li><b>超时与重试</b>：每个供应商可单独设「首字超时」「停滞超时」「超时重试次数」，留空=跟随全局（默认 120s / 300s / 1 次）。首字超时或网络错误时先在同密钥上重试，用尽再换密钥、换供应商；停滞超时（流式输出中途没新数据）只中止不重试。</li>
             <li><b>额度耗尽 / 熔断</b>：上游返回 402（余额不足）时整家供应商自动跳过（默认 30 分钟，可在设置里改），列表显示红色「额度耗尽」徽章；连续 3 次 5xx/网络失败则熔断 60 秒，显示「熔断中」。点「恢复」可立即解除两者。</li>
           </ol>
         </div>
@@ -590,6 +606,7 @@ print(resp.choices[0].message.content)</pre>
             <li><b>管理密码</b>：面板登录密码。</li>
             <li><b>日志保存天数</b>：请求日志与统计的保留期，超期自动清理。</li>
             <li><b>对话超时</b>：默认 600 秒，范围 10~1800；超过 600 秒面板会给出警告，因为挂起的上游请求会长期占住密钥并发槽。</li>
+            <li><b>首字超时 / 停滞超时 / 超时重试</b>：全局默认 120 秒 / 300 秒 / 1 次，填 -1 可关闭；供应商与平台模型可各自覆盖（模型优先于供应商，供应商优先于全局）。</li>
             <li><b>额度耗尽跳过时长</b>：上游 402 后整家供应商跳过多久，默认 1800 秒。</li>
             <li><b>调试模式</b>：记录完整报文，排障时打开，平时建议关闭。</li>
             <li><b>配置备份</b>：可一键导出/导入完整配置（含管理密码、客户端密钥、供应商密钥），导入会整体替换现有配置，请务必保管好导出文件。</li>
@@ -603,6 +620,7 @@ print(resp.choices[0].message.content)</pre>
             <li><code>401 invalid_api_key</code>：客户端密钥不对，去「密钥」页核对。</li>
             <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
             <li><code>429 rate_limited</code>：所有 key 的并发/时间窗限流都已满，稍后重试，或提高 key 的上限 / 增加密钥。</li>
+            <li><b>首字超时 / 停滞超时</b>：错误信息里会写明「首字超时（N 秒内上游无响应）」或「流中停滞超时（N 秒无新数据）」，前者已自动重试过，后者是流式输出中途中断。</li>
             <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」或「日志」看具体上游错误。</li>
             <li><code>503 no_available_member</code>：平台模型没有启用成员，或所有成员正在冷却。</li>
           </ul>
@@ -633,6 +651,21 @@ print(resp.choices[0].message.content)</pre>
       <label class="label">代理（可选）</label>
       <input id="fProvProxy" class="input" placeholder="http://mihomo:7890">
       <p class="field-hint">该供应商的上游调用经此代理转发，支持 http/https/socks5；留空 = 直连。注意须填「容器网络可达」的地址（127.0.0.1 是容器自身，不可用）；本机 mihomo 容器请用 http://mihomo:7890。</p>
+    </div>
+    <div class="form-row">
+      <label class="label">首字超时（秒，0/留空=跟随全局，-1=关闭）</label>
+      <input id="fProvFirstByte" class="input input-sm" type="number" placeholder="如 120">
+      <p class="field-hint">超过该秒数上游仍无任何响应 → 判定首字超时，按下面的重试次数自动重试。上游慢的供应商可调大。</p>
+    </div>
+    <div class="form-row">
+      <label class="label">停滞超时（秒，0/留空=跟随全局，-1=关闭）</label>
+      <input id="fProvStall" class="input input-sm" type="number" placeholder="如 300">
+      <p class="field-hint">流式输出中途超过该秒数没有新数据 → 判定停滞，中断本次输出（已输出的内容不会重发）。</p>
+    </div>
+    <div class="form-row">
+      <label class="label">超时重试次数（0/留空=跟随全局，-1=不重试）</label>
+      <input id="fProvRetries" class="input input-sm" type="number" placeholder="如 1">
+      <p class="field-hint">首字超时/网络错误时，先在同一把密钥上重试，用尽后自动换密钥、换供应商。</p>
     </div>
     <div class="form-row">
       <label class="label">API Key（每行一个，可配多个做密钥池）</label>
@@ -727,7 +760,16 @@ print(resp.choices[0].message.content)</pre>
         <label class="label">最大重试成员数</label>
         <input id="fPlatRetry" class="input input-sm" type="number" value="3">
       </div>
+      <div class="form-row">
+        <label class="label">首字超时（秒，留空/0=跟随供应商，-1=关闭）</label>
+        <input id="fPlatFirstByte" class="input input-sm" type="number" value="0">
+      </div>
+      <div class="form-row">
+        <label class="label">停滞超时（秒，留空/0=跟随供应商，-1=关闭）</label>
+        <input id="fPlatStall" class="input input-sm" type="number" value="0">
+      </div>
     </div>
+    <p class="field-hint" style="margin:-2px 0 8px">首字超时/停滞超时：推理模型或长输出可单独放宽（例如 300 / 600）。</p>
     <label class="label" style="margin-top:6px">成员列表（先选供应商再选模型，输入即可搜索；权重 = 分流比例，优先级 = 故障转移顺序，数字小者优先）</label>
     <div class="table-wrap">
       <table class="memtbl" id="memTable"><thead><tr><th style="width:52%">供应商 › 模型</th><th>权重</th><th>优先级</th><th>启用</th><th></th></tr></thead><tbody></tbody></table>
@@ -1035,6 +1077,9 @@ function openProviderModal(id){
   document.getElementById('fProvName').value=p.name||'';
   document.getElementById('fProvURL').value=p.base_url||'';
   document.getElementById('fProvProxy').value=p.proxy||'';
+  document.getElementById('fProvFirstByte').value=p.first_byte_timeout_sec||'';
+  document.getElementById('fProvStall').value=p.stall_timeout_sec||'';
+  document.getElementById('fProvRetries').value=p.timeout_retries||'';
   const keys=(p.keys&&p.keys.length)?p.keys:(p.api_key?[{key:p.api_key}]:[]);
   document.getElementById('fProvKeys').value=keys.map(k=>k.key).join('\n');
   document.getElementById('fProvNote').value=p.note||'';
@@ -1050,7 +1095,7 @@ async function saveProvider(){
     const prev=old&&(old.keys||[]).find(x=>x.key===k);
     return prev?{key:k,note:prev.note,weight:prev.weight,priority:prev.priority,disabled:prev.disabled}:{key:k,weight:1};
   });
-  const body={name:document.getElementById('fProvName').value.trim(),base_url:document.getElementById('fProvURL').value.trim(),proxy:document.getElementById('fProvProxy').value.trim(),keys,note:document.getElementById('fProvNote').value.trim(),kind:'openai-compat',enabled:true};
+  const body={name:document.getElementById('fProvName').value.trim(),base_url:document.getElementById('fProvURL').value.trim(),proxy:document.getElementById('fProvProxy').value.trim(),first_byte_timeout_sec:+document.getElementById('fProvFirstByte').value||0,stall_timeout_sec:+document.getElementById('fProvStall').value||0,timeout_retries:(document.getElementById('fProvRetries').value===''?0:+document.getElementById('fProvRetries').value),keys,note:document.getElementById('fProvNote').value.trim(),kind:'openai-compat',enabled:true};
   if(!body.name||!body.base_url){toast('名称与 Base URL 必填',true);return}
   try{
     if(id){await api('/admin/api/providers/'+id,{method:'PUT',body:JSON.stringify(body)})}
@@ -1235,6 +1280,8 @@ async function openPlatformModal(id){
   document.getElementById('fPlatStrategy').value=p.strategy||'sticky';
   document.getElementById('fPlatSticky').value=p.sticky_limit||0;
   document.getElementById('fPlatRetry').value=p.max_retry_members||3;
+  document.getElementById('fPlatFirstByte').value=p.first_byte_timeout_sec||0;
+  document.getElementById('fPlatStall').value=p.stall_timeout_sec||0;
   document.getElementById('mPlatform').dataset.id=id||'';
   // 先把所有供应商的模型拉齐，再渲染行（行内需要按 provider_model_id 反查供应商/模型名）
   PMODS={};
@@ -1300,7 +1347,7 @@ async function savePlatform(){
   });
   if(bad){toast('有成员未匹配到「供应商 + 模型」，请补全后再保存',true);return}
   if(!members.length){toast('至少需要一个成员',true);return}
-  const body={name,aliases,strategy:document.getElementById('fPlatStrategy').value,sticky_limit:+document.getElementById('fPlatSticky').value||0,max_retry_members:+document.getElementById('fPlatRetry').value||3,enabled:true,members};
+  const body={name,aliases,strategy:document.getElementById('fPlatStrategy').value,sticky_limit:+document.getElementById('fPlatSticky').value||0,max_retry_members:+document.getElementById('fPlatRetry').value||3,first_byte_timeout_sec:+document.getElementById('fPlatFirstByte').value||0,stall_timeout_sec:+document.getElementById('fPlatStall').value||0,enabled:true,members};
   try{
     if(id){await api('/admin/api/platform-models/'+id,{method:'PUT',body:JSON.stringify(body)})}
     else{await api('/admin/api/platform-models',{method:'POST',body:JSON.stringify(body)})}
@@ -1359,6 +1406,12 @@ async function loadSettings(){
   document.getElementById('setLogDays').value=s.log_retention_days||30;
   const ex=document.getElementById('setExhausted');
   if(ex)ex.value=s.exhausted_cooldown_seconds||1800;
+  const fb=document.getElementById('setFirstByte');
+  if(fb)fb.value=(s.first_byte_timeout_sec==null?120:s.first_byte_timeout_sec);
+  const stl=document.getElementById('setStall');
+  if(stl)stl.value=(s.stall_timeout_sec==null?300:s.stall_timeout_sec);
+  const rt=document.getElementById('setRetries');
+  if(rt)rt.value=(s.timeout_retries==null?1:s.timeout_retries);
   checkChatTimeout();
 }
 // 对话超时异常警示（>600s 提示，>1800s 会被服务端钳制）
@@ -1408,7 +1461,7 @@ function importConfig(input){
   input.value='';
 }
 async function saveSettings(){
-  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,exhausted_cooldown_seconds:+document.getElementById('setExhausted').value||1800,debug_payloads:document.getElementById('setDebug').value==='1',log_retention_days:+document.getElementById('setLogDays').value||30};
+  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,exhausted_cooldown_seconds:+document.getElementById('setExhausted').value||1800,first_byte_timeout_sec:+document.getElementById('setFirstByte').value,stall_timeout_sec:+document.getElementById('setStall').value,timeout_retries:+document.getElementById('setRetries').value,debug_payloads:document.getElementById('setDebug').value==='1',log_retention_days:+document.getElementById('setLogDays').value||30};
   try{await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});toast('已保存')}catch(e){toast(e.message,true)}
 }
 async function changePwd(){

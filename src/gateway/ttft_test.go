@@ -48,7 +48,10 @@ func TestStreamTTFTCaptured(t *testing.T) {
 	st := newTestStore(t)
 	s := NewServer(st, "test")
 	w := httptest.NewRecorder()
-	p, c, _, ttft := s.streamToClient(w, resp, time.Now())
+	p, c, _, ttft, committed, serr := s.streamToClient(w, resp, time.Now())
+	if serr != nil || !committed {
+		t.Fatalf("应正常提交: committed=%v err=%v", committed, serr)
+	}
 	if p != 10 || c != 2 {
 		t.Fatalf("usage 解析错误: %d/%d", p, c)
 	}
@@ -67,7 +70,7 @@ func TestStreamTTFTIgnoresRoleOnlyChunk(t *testing.T) {
 	st := newTestStore(t)
 	s := NewServer(st, "test")
 	w := httptest.NewRecorder()
-	_, _, _, ttft := s.streamToClient(w, resp, time.Now())
+	_, _, _, ttft, _, _ := s.streamToClient(w, resp, time.Now())
 	if ttft < 190 {
 		t.Fatalf("role-only 块不应计首字，ttft 应约 240ms，实际 %dms", ttft)
 	}
@@ -82,7 +85,7 @@ func TestStreamTTFTReasoningCounts(t *testing.T) {
 	st := newTestStore(t)
 	s := NewServer(st, "test")
 	w := httptest.NewRecorder()
-	_, _, _, ttft := s.streamToClient(w, resp, time.Now())
+	_, _, _, ttft, _, _ := s.streamToClient(w, resp, time.Now())
 	if ttft > 260 {
 		t.Fatalf("推理块应算首字（约 120ms），实际 %dms", ttft)
 	}

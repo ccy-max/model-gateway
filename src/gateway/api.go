@@ -379,10 +379,10 @@ type attemptResult struct {
 }
 
 // tryMember 对单个成员发起调用：先在供应商密钥池内做第二轮负载均衡
-// （按权重轮询 + 失败冷却），key 级失败(401/402/403/408/429/5xx/网络)自动轮换下一把；
+// （按权重轮询 + 失败冷却），key 级失败(401/402/403/408/429/5xx/网络/超时)自动轮换下一把；
 // 全部 key 失败才把该成员判为失败（handled=false，交回成员级故障转移）。
+// 超时策略：首字超时/网络错误按配置在同 key 上重试，重试用尽再换 key、换供应商。
 // 非 key 级 4xx（如 400/404 请求本身有误）直接写回客户端，不再轮换。
-// clientReq 为调试模式下的客户端请求报文（未开启时为空串）。
 func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider, pmod ProviderModel, pm PlatformModel, payload map[string]any, wantStream bool, keyNote string, settings Settings, clientReq, reqID string, final bool) attemptResult {
 	memberKey := pm.ID + "|" + pmod.ID
 	s.router.Inflight(memberKey, 1)
@@ -392,6 +392,20 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 	if len(keys) == 0 {
 		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "", reqID, final)
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
+	}
+
+	// 生效的超时配置：平台模型 > 供应商 > 全局（0=继承，负数=关闭）
+	firstByteSec := resolveTimeout(pm.FirstByteTimeoutSec, prov.FirstByteTimeoutSec, settings.FirstByteTimeoutSec)
+	stallSec := resolveTimeout(pm.StallTimeoutSec, prov.StallTimeoutSec, settings.StallTimeoutSec)
+	retries := prov.TimeoutRetries
+	if retries == 0 {
+		retries = settings.TimeoutRetries
+	}
+	if retries < 0 {
+		retries = 0
+	}
+	if retries > 3 {
+		retries = 3
 	}
 
 	// 每把 key 的最大并发数（MaxInflight，0=不限）：已满载的 key 直接跳过
@@ -438,97 +452,180 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		s.router.RateRecord(cd.Key, pk.RateLimit, pk.RateWindowSec)
 
 		s.router.Inflight(cd.Key, 1)
-		start := time.Now()
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(settings.ChatTimeoutSec)*time.Second)
-		var upReqBody []byte
-		resp, err := up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key, &upReqBody)
-		if err != nil && ctx.Err() == nil {
-			// 网络类失败（非超时/取消）：同 key 有界重试一次，降低单次抖动导致的失败
-			time.Sleep(200 * time.Millisecond)
-			resp, err = up.Chat(ctx, pmod.Model, payload, wantStream, pk.Key, &upReqBody)
+		call := &keyCall{
+			r: r, w: w, prov: prov, pmod: pmod, pm: pm, up: up, pk: pk, keyMask: keyMask, candKey: cd.Key,
+			payload: payload, wantStream: wantStream, keyNote: keyNote, settings: settings,
+			clientReq: clientReq, reqID: reqID, final: final,
+			firstByteSec: firstByteSec, stallSec: stallSec,
 		}
-		latency := time.Since(start).Milliseconds()
-
-		if err != nil {
-			cancel()
-			s.router.Inflight(cd.Key, -1)
-			s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
-			s.router.MarkProviderFailure(prov.ID, 3, 60)
-			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, 0, nil)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err.Error(), dbg, reqID, final)
-			lastErr = fmt.Sprintf("%s(%s): %v", prov.Name, keyMask, err)
-			continue
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			var prompt, compl, cached, ttft int64
-			var respHead []byte
-			if wantStream {
-				var buf *limitedBuffer
-				if settings.DebugPayloads {
-					buf = &limitedBuffer{max: debugCap}
-					resp.Body = newTeeBody(resp.Body, buf)
-				}
-				prompt, compl, cached, ttft = s.streamToClient(w, resp, start)
-				if buf != nil {
-					respHead = buf.b
-				}
-			} else {
-				if settings.DebugPayloads {
-					raw, rerr := io.ReadAll(resp.Body)
-					if rerr == nil {
-						respHead = raw
-						resp.Body = io.NopCloser(bytes.NewReader(raw))
-					}
-				}
-				var err2 error
-				prompt, compl, cached, err2 = s.jsonToClient(w, resp)
-				if err2 != nil {
-					resp.Body.Close()
-					cancel()
-					s.router.Inflight(cd.Key, -1)
-					s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
-					dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err2.Error(), dbg, reqID, final)
-					lastErr = fmt.Sprintf("%s(%s): 响应解析失败: %v", prov.Name, keyMask, err2)
-					continue
-				}
+		res := attemptResult{}
+		for try := 0; try <= retries; try++ {
+			if try > 0 {
+				time.Sleep(200 * time.Millisecond) // 重试前短暂退避
 			}
-			s.router.MarkSuccess(cd.Key)
-			s.router.MarkProviderSuccess(prov.ID)
-			s.router.Inflight(cd.Key, -1)
-			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-			// 成功即本次业务请求的终态，final 恒为 true（与是否为最后一个成员无关）
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, false, "", dbg, reqID, true)
-			cancel()
-			return attemptResult{handled: true, status: http.StatusOK, prompt: prompt, compl: compl}
+			var retryable bool
+			res, retryable = s.attemptOnce(call)
+			if !retryable || try == retries {
+				break
+			}
 		}
-
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		cancel()
 		s.router.Inflight(cd.Key, -1)
-		msg := upstreamError(resp.StatusCode, body)
-		failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
-			resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
-		dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, body)
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, reqID, final)
-		switch {
-		case resp.StatusCode == http.StatusPaymentRequired:
-			// 余额/额度耗尽（402）：整个供应商跳过一段时间，避免每次请求都白打一圈密钥
-			s.router.MarkExhausted(prov.ID, settings.ExhaustedCooldownSec)
-		case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
-			s.router.MarkProviderFailure(prov.ID, 3, 60)
+		if res.handled {
+			return res
 		}
-		if !failoverable {
-			writeUpstreamError(w, resp.StatusCode, msg)
-			return attemptResult{handled: true, status: resp.StatusCode, errMsg: msg}
-		}
-		s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
-		lastErr = fmt.Sprintf("%s(%s): %d %s", prov.Name, keyMask, resp.StatusCode, msg)
+		lastErr = res.errMsg
 	}
 	// 一把都没真正发出去（全部被并发/限流跳过）→ 标记 saturated，供上层返回 429
 	return attemptResult{handled: false, saturated: !attempted, errMsg: lastErr}
+}
+
+// keyCall 单把 key 的一次调用上下文。
+type keyCall struct {
+	r      *http.Request
+	w      http.ResponseWriter
+	prov   Provider
+	pmod   ProviderModel
+	pm     PlatformModel
+	up     *upstream
+	pk      ProviderKey
+	keyMask string
+	candKey string // 路由候选键：供应商ID|k|密钥，冷却/成功状态都以它为准
+	payload    map[string]any
+	wantStream bool
+	keyNote    string
+	settings   Settings
+	clientReq  string
+	reqID      string
+	final      bool
+	firstByteSec, stallSec int
+}
+
+// attemptOnce 用一把 key 发起一次上游调用并处理响应。
+// 返回 retryable=true 表示「未向客户端写出任何内容」的失败，可在同 key 上重试。
+func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
+	start := time.Now()
+	lastAct := start.UnixNano()
+	var gotData, timeoutKind int32
+	ctx, cancel := context.WithTimeout(c.r.Context(), time.Duration(c.settings.ChatTimeoutSec)*time.Second)
+	watch := startIdleWatch(ctx, cancel, c.firstByteSec, c.stallSec, &lastAct, &gotData, &timeoutKind)
+	defer watch.Stop()
+	defer cancel()
+
+	var upReqBody []byte
+	resp, err := c.up.Chat(ctx, c.pmod.Model, c.payload, c.wantStream, c.pk.Key, &upReqBody)
+	if err == nil {
+		resp.Body = &activityBody{rc: resp.Body, last: &lastAct, got: &gotData}
+	}
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		// 没拿到响应：网络错误 / 首字超时 / 客户端取消
+		s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
+		s.router.MarkProviderFailure(c.prov.ID, 3, 60)
+		msg := err.Error()
+		if lbl := timeoutLabel(timeoutKind, c.firstByteSec, c.stallSec); lbl != "" {
+			msg = lbl
+		}
+		dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, 0, nil)
+		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+		return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var prompt, compl, cached, ttft int64
+		var respHead []byte
+		committed := true
+		if c.wantStream {
+			var buf *limitedBuffer
+			if c.settings.DebugPayloads {
+				buf = &limitedBuffer{max: debugCap}
+				resp.Body = newTeeBody(resp.Body, buf)
+			}
+			var serr error
+			prompt, compl, cached, ttft, committed, serr = s.streamToClient(c.w, resp, start)
+			if buf != nil {
+				respHead = buf.b
+			}
+			if serr != nil {
+				msg := serr.Error()
+				if lbl := timeoutLabel(timeoutKind, c.firstByteSec, c.stallSec); lbl != "" {
+					msg = lbl
+				}
+				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+				if committed {
+					// 已经向客户端输出过内容：只能中止，不能重试/转移
+					resp.Body.Close()
+					return attemptResult{handled: true, status: http.StatusOK, errMsg: msg}, false
+				}
+				s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
+				s.router.MarkProviderFailure(c.prov.ID, 3, 60)
+				return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
+			}
+		} else {
+			if c.settings.DebugPayloads {
+				raw, rerr := io.ReadAll(resp.Body)
+				if rerr == nil {
+					respHead = raw
+					resp.Body = io.NopCloser(bytes.NewReader(raw))
+				}
+			}
+			var err2 error
+			prompt, compl, cached, err2 = s.jsonToClient(c.w, resp)
+			if err2 != nil {
+				msg := err2.Error()
+				if lbl := timeoutLabel(timeoutKind, c.firstByteSec, c.stallSec); lbl != "" {
+					msg = lbl
+				}
+				resp.Body.Close()
+				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, c.final)
+				s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
+				s.router.MarkProviderFailure(c.prov.ID, 3, 60)
+				return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
+			}
+		}
+		s.router.MarkSuccess(c.candKey)
+		s.router.MarkProviderSuccess(c.prov.ID)
+		dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+		// 成功即本次业务请求的终态，final 恒为 true（与是否为最后一个成员无关）
+		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, false, "", dbg, c.reqID, true)
+		return attemptResult{handled: true, status: http.StatusOK, prompt: prompt, compl: compl}, false
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	msg := upstreamError(resp.StatusCode, body)
+	failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
+		resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
+	dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, body)
+	s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, c.reqID, c.final)
+	switch {
+	case resp.StatusCode == http.StatusPaymentRequired:
+		// 余额/额度耗尽（402）：整个供应商跳过一段时间，避免每次请求都白打一圈密钥
+		s.router.MarkExhausted(c.prov.ID, c.settings.ExhaustedCooldownSec)
+	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
+		s.router.MarkProviderFailure(c.prov.ID, 3, 60)
+	}
+	if !failoverable {
+		writeUpstreamError(c.w, resp.StatusCode, msg)
+		return attemptResult{handled: true, status: resp.StatusCode, errMsg: msg}, false
+	}
+	s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
+	return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %d %s", c.prov.Name, c.keyMask, resp.StatusCode, msg)}, false
+}
+
+// resolveTimeout 取第一个非零值：0 表示继承下一级；负数表示关闭。
+func resolveTimeout(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			if v < 0 {
+				return -1
+			}
+			return v
+		}
+	}
+	return 0
 }
 
 // ---------- 调试报文捕获 ----------
@@ -620,27 +717,41 @@ type sseChunk struct {
 }
 
 // streamToClient SSE 透传（逐行刷写），并从带 usage 的块提取 token 数；
-// 同时记录首个内容块时间（TTFT，相对 start）。返回 ttft 为 0 表示未测到首字（如纯错误流）。
-func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, start time.Time) (int64, int64, int64, int64) {
+// 同时记录首个内容块时间（TTFT，相对 start）。
+// 重要：在收到第一条有效 data 之前不向客户端写任何内容（响应头也不写），
+// 这样首字超时可以安全重试；committed=true 表示已写出内容，此后的错误只能中止。
+func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, start time.Time) (prompt, compl, cached, ttft int64, committed bool, err error) {
 	flusher, _ := w.(http.Flusher)
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "text/event-stream"
 	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	if flusher != nil {
-		flusher.Flush()
+	var pending []string
+	commit := func() {
+		if committed {
+			return
+		}
+		committed = true
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		for _, l := range pending {
+			_, _ = fmt.Fprintln(w, l)
+		}
+		pending = nil
+		if flusher != nil {
+			flusher.Flush()
+		}
 	}
-	var prompt, compl, cached, ttft int64
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
-		if strings.HasPrefix(line, "data:") {
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		payload := ""
+		isData := strings.HasPrefix(line, "data:")
+		if isData {
+			payload = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if payload != "" && payload != "[DONE]" {
 				var chunk sseChunk
 				if json.Unmarshal([]byte(payload), &chunk) == nil {
@@ -658,12 +769,29 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 				}
 			}
 		}
+		if !committed {
+			pending = append(pending, line)
+			// 第一条有效 data 到达即提交；缓冲过多（如大量心跳注释）也强制提交，避免内存膨胀
+			if (isData && payload != "") || len(pending) > 2000 {
+				commit()
+			}
+			continue
+		}
 		_, _ = fmt.Fprintln(w, line)
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
-	return prompt, compl, cached, ttft
+	if serr := sc.Err(); serr != nil {
+		if !committed {
+			return 0, 0, 0, 0, false, serr
+		}
+		return prompt, compl, cached, ttft, true, serr
+	}
+	if !committed {
+		return 0, 0, 0, 0, false, fmt.Errorf("上游未返回任何数据")
+	}
+	return prompt, compl, cached, ttft, true, nil
 }
 
 // jsonToClient 非流式透传并提取 usage。
@@ -1841,6 +1969,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 				c.Settings.ChatTimeoutSec = v
 			}
+			// 上游超时：允许 0（用默认）与 -1（关闭）；正数直接生效
+			c.Settings.FirstByteTimeoutSec = body.FirstByteTimeoutSec
+			c.Settings.StallTimeoutSec = body.StallTimeoutSec
+			c.Settings.TimeoutRetries = body.TimeoutRetries
 			if body.ExhaustedCooldownSec > 0 {
 				v := body.ExhaustedCooldownSec
 				if v < 60 {

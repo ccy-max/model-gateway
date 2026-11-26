@@ -59,6 +59,10 @@ type Provider struct {
 	// Proxy 上游调用代理地址（http/https/socks5，如 http://mihomo:7890）；
 	// 留空 = 直连。注意：须为容器网络可达地址（127.0.0.1 是容器自身，不可用）。
 	Proxy string `json:"proxy,omitempty"`
+	// 上游超时覆盖：0 = 跟随全局设置；负数 = 关闭该项
+	FirstByteTimeoutSec int `json:"first_byte_timeout_sec,omitempty"` // 首字节超时（秒），超时自动重试
+	StallTimeoutSec     int `json:"stall_timeout_sec,omitempty"`      // 流中停滞超时（秒），只中止不重试
+	TimeoutRetries      int `json:"timeout_retries,omitempty"`        // 同 key 超时重试次数；0=跟随全局，-1=不重试
 }
 
 // EnabledKeys 返回启用的非空密钥（旧单 Key 字段已由 Normalize 并入）。
@@ -109,6 +113,9 @@ type PlatformModel struct {
 	MaxRetry    int      `json:"max_retry_members,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Members     []Member `json:"members"`
+	// 超时覆盖（0 = 跟随供应商；-1 = 关闭该项）。推理模型/长输出可单独放宽
+	FirstByteTimeoutSec int `json:"first_byte_timeout_sec,omitempty"`
+	StallTimeoutSec     int `json:"stall_timeout_sec,omitempty"`
 }
 
 // Settings 全局设置。
@@ -118,6 +125,9 @@ type Settings struct {
 	CooldownBaseSec      int  `json:"cooldown_base_seconds"`       // 密钥失败冷却基数（指数退避）
 	CooldownMaxSec       int  `json:"cooldown_max_seconds"`        // 密钥冷却上限
 	ExhaustedCooldownSec int  `json:"exhausted_cooldown_seconds"`  // 供应商额度耗尽（402）后的整体跳过时长，默认 1800
+	FirstByteTimeoutSec  int  `json:"first_byte_timeout_sec"`      // 首字节超时（秒），默认 120；0=关闭。超时自动重试
+	StallTimeoutSec      int  `json:"stall_timeout_sec"`           // 流中停滞超时（秒），默认 300；0=关闭。只中止不重试
+	TimeoutRetries       int  `json:"timeout_retries"`             // 超时后同 key 重试次数，默认 1
 	DebugPayloads        bool `json:"debug_payloads"`              // 开启后请求日志额外记录请求/响应报文
 	LogRetentionDays     int  `json:"log_retention_days"`          // 请求日志保留天数（<=0 视为 30）
 }
@@ -186,6 +196,19 @@ func (c *Config) Normalize() {
 	}
 	if c.Settings.ExhaustedCooldownSec <= 0 {
 		c.Settings.ExhaustedCooldownSec = 1800
+	}
+	// 上游超时：0 = 未配置（用默认 120s / 300s / 1 次重试）；-1 = 关闭；正数 = 自定义
+	if c.Settings.FirstByteTimeoutSec == 0 {
+		c.Settings.FirstByteTimeoutSec = 120
+	}
+	if c.Settings.StallTimeoutSec == 0 {
+		c.Settings.StallTimeoutSec = 300
+	}
+	if c.Settings.TimeoutRetries == 0 {
+		c.Settings.TimeoutRetries = 1
+	}
+	if c.Settings.TimeoutRetries > 3 {
+		c.Settings.TimeoutRetries = 3
 	}
 	if c.Settings.ModelsTimeoutSec <= 0 {
 		c.Settings.ModelsTimeoutSec = 15
