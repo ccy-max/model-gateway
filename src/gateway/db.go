@@ -210,7 +210,7 @@ FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 // QueryLogs 按时间范围取日志，时间升序返回，最多 limit 条（取最新）。
 func (d *DB) QueryLogs(fromTs, toTs int64, limit int) []RequestLog {
 	out := []RequestLog{}
-	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
+	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms,req_id,final
 FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, toTs, limit)
 	if err != nil {
 		log.Printf("[db] 查日志失败: %v", err)
@@ -220,8 +220,10 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 	for rs.Next() {
 		var r RequestLog
 		var stream int
-		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT); err == nil {
+		var fin int
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT, &r.ReqID, &fin); err == nil {
 			r.Stream = stream == 1
+			r.Final = fin == 1
 			out = append(out, r)
 		}
 	}
@@ -234,13 +236,13 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 
 // QueryLogsRecent 取最新 limit 条日志（新→旧），供「日志」页使用。
 func (d *DB) QueryLogsRecent(limit int) []RequestLog {
-	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms,req_id,final
 FROM request_logs ORDER BY ts DESC, id DESC LIMIT ?`, limit)
 }
 
 // QueryLogsPaged 分页取日志（新→旧）：limit 每页条数，offset 偏移。
 func (d *DB) QueryLogsPaged(limit, offset int) []RequestLog {
-	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms,req_id,final
 FROM request_logs ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, limit, offset)
 }
 
@@ -264,8 +266,10 @@ func (d *DB) queryLogsOrdered(query string, args ...any) []RequestLog {
 	for rs.Next() {
 		var r RequestLog
 		var stream int
-		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT); err == nil {
+		var fin int
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT, &r.ReqID, &fin); err == nil {
 			r.Stream = stream == 1
+			r.Final = fin == 1
 			out = append(out, r)
 		}
 	}

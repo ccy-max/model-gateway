@@ -1507,7 +1507,7 @@ async function loadLogs(){
 function showLogDetail(i){
   const l=LOGROWS[i];
   if(!l)return;
-  document.getElementById('mLogTitle').textContent='· '+(l.model||'')+' · '+fmtTime(l.time);
+  document.getElementById('mLogTitle').textContent='· '+(l.model||'')+' · '+fmtTime(l.time)+(l.req_id?' · #'+l.req_id:'');
   let d=null;
   try{d=JSON.parse(l.debug)}catch(e){}
   const sec=(title,txt)=>'<div style="margin-bottom:14px"><div class="label" style="margin-bottom:4px">'+title+'</div><pre class="guide-pre" style="max-height:260px;white-space:pre-wrap">'+esc(txt||'(空)')+'</pre></div>';
