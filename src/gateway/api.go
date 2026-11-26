@@ -2198,6 +2198,11 @@ func (w *statusWriter) WriteHeader(code int) {
 // 用于区分「服务端慢」与「链路/客户端慢」。
 func (s *Server) timingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 面板与管理接口禁用长连接：容器重建后旧连接会变成「半死」状态，
+		// 浏览器复用它会一直等到 TCP 超时（十几秒）。每次请求新建连接可彻底避免。
+		if r.URL.Path == "/" || r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
+			w.Header().Set("Connection", "close")
+		}
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(sw, r)

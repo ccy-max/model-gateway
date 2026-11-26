@@ -57,6 +57,7 @@ func main() {
 		Addr:              host + ":" + port,
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       30 * time.Second, // 空闲连接较快回收，减少「容器重建后客户端复用死连接」的概率
 	}
 
 	go func() {
