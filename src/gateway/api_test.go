@@ -674,9 +674,12 @@ func TestUsageCacheExtraction(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
 	w3 := httptest.NewRecorder()
-	p3, c3, ce3 := s.streamToClient(w3, resp3)
+	p3, c3, ce3, ttft3 := s.streamToClient(w3, resp3, time.Now())
 	if p3 != 50 || c3 != 5 || ce3 != 30 {
 		t.Fatalf("stream expect 50/5/30, got %d/%d/%d", p3, c3, ce3)
+	}
+	if ttft3 < 0 {
+		t.Fatalf("ttft 应为非负，got %d", ttft3)
 	}
 }
 
@@ -994,7 +997,7 @@ func TestStatsErrorAccounting(t *testing.T) {
 	}
 
 	// 直接记一次失败尝试（另一供应商维度）
-	s.db.UpsertStat(time.Now().Format("2006-01-02"), "p_fail", "fail-model", true, 0, 0, 0, 10)
+	s.db.UpsertStat(time.Now().Format("2006-01-02"), "p_fail", "fail-model", true, 0, 0, 0, 10, 0)
 
 	// 登录查统计
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/login", strings.NewReader(`{"password":"test-pass"}`))

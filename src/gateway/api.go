@@ -347,7 +347,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 
 	keys := prov.EnabledKeys()
 	if len(keys) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, true, "无可用密钥", "")
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "无可用密钥", "")
 		return attemptResult{handled: false, errMsg: prov.Name + ": 无可用密钥"}
 	}
 
@@ -367,7 +367,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		byCand[ck] = k
 	}
 	if len(cands) == 0 {
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "")
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, "", wantStream, 0, 0, 0, 0, 0, true, "限流：全部密钥并发已满", "")
 		return attemptResult{handled: false, saturated: true, errMsg: prov.Name + ": 全部密钥并发已满"}
 	}
 	order := s.router.Pick(cands, "round-robin", "", 0)
@@ -406,13 +406,13 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 			s.router.Inflight(cd.Key, -1)
 			s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
 			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, 0, nil)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err.Error(), dbg)
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err.Error(), dbg)
 			lastErr = fmt.Sprintf("%s(%s): %v", prov.Name, keyMask, err)
 			continue
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			var prompt, compl, cached int64
+			var prompt, compl, cached, ttft int64
 			var respHead []byte
 			if wantStream {
 				var buf *limitedBuffer
@@ -420,7 +420,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 					buf = &limitedBuffer{max: debugCap}
 					resp.Body = newTeeBody(resp.Body, buf)
 				}
-				prompt, compl, cached = s.streamToClient(w, resp)
+				prompt, compl, cached, ttft = s.streamToClient(w, resp, start)
 				if buf != nil {
 					respHead = buf.b
 				}
@@ -440,7 +440,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 					s.router.Inflight(cd.Key, -1)
 					s.router.MarkFailure(cd.Key, settings.CooldownBaseSec, settings.CooldownMaxSec)
 					dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, err2.Error(), dbg)
+					s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, err2.Error(), dbg)
 					lastErr = fmt.Sprintf("%s(%s): 响应解析失败: %v", prov.Name, keyMask, err2)
 					continue
 				}
@@ -448,7 +448,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 			s.router.MarkSuccess(cd.Key)
 			s.router.Inflight(cd.Key, -1)
 			dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, respHead)
-			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), prompt, compl, cached, false, "", dbg)
+			s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, false, "", dbg)
 			cancel()
 			return attemptResult{handled: true, status: http.StatusOK, prompt: prompt, compl: compl}
 		}
@@ -461,7 +461,7 @@ func (s *Server) tryMember(r *http.Request, w http.ResponseWriter, prov Provider
 		failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
 			resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
 		dbg := buildDebugPayload(clientReq, upReqBody, up.baseURL+"/chat/completions", pmod.Model, keyMask, resp.StatusCode, body)
-		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg)
+		s.recordAttempt(prov, pm.Name, pmod.Model, keyNote, keyMask, wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg)
 		if !failoverable {
 			writeUpstreamError(w, resp.StatusCode, msg)
 			return attemptResult{handled: true, status: resp.StatusCode, errMsg: msg}
@@ -550,8 +550,20 @@ func (u *usageExtras) cached() int64 {
 	return u.PromptCacheHitTokens
 }
 
-// streamToClient SSE 透传（逐行刷写），并从带 usage 的块提取 token 数。
-func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response) (int64, int64, int64) {
+// sseChunk 流式块：只关心 usage 与首个内容 delta（用于测首字时间 TTFT）。
+type sseChunk struct {
+	Usage   *usageExtras `json:"usage"`
+	Choices []struct {
+		Delta struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// streamToClient SSE 透传（逐行刷写），并从带 usage 的块提取 token 数；
+// 同时记录首个内容块时间（TTFT，相对 start）。返回 ttft 为 0 表示未测到首字（如纯错误流）。
+func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, start time.Time) (int64, int64, int64, int64) {
 	flusher, _ := w.(http.Flusher)
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
@@ -564,7 +576,7 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response) (int
 	if flusher != nil {
 		flusher.Flush()
 	}
-	var prompt, compl, cached int64
+	var prompt, compl, cached, ttft int64
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -572,11 +584,19 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response) (int
 		if strings.HasPrefix(line, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if payload != "" && payload != "[DONE]" {
-				var chunk struct {
-					Usage *usageExtras `json:"usage"`
-				}
-				if json.Unmarshal([]byte(payload), &chunk) == nil && chunk.Usage != nil {
-					prompt, compl, cached = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.cached()
+				var chunk sseChunk
+				if json.Unmarshal([]byte(payload), &chunk) == nil {
+					if chunk.Usage != nil {
+						prompt, compl, cached = chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, chunk.Usage.cached()
+					}
+					if ttft == 0 {
+						for _, ch := range chunk.Choices {
+							if ch.Delta.Content != "" || ch.Delta.ReasoningContent != "" {
+								ttft = time.Since(start).Milliseconds()
+								break
+							}
+						}
+					}
 				}
 			}
 		}
@@ -585,7 +605,7 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response) (int
 			flusher.Flush()
 		}
 	}
-	return prompt, compl, cached
+	return prompt, compl, cached, ttft
 }
 
 // jsonToClient 非流式透传并提取 usage。
@@ -780,14 +800,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 统计与日志 ----------
 
-func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency int64, prompt, compl, cached int64, isErr bool, errMsg, debug string) {
+func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency, ttft int64, prompt, compl, cached int64, isErr bool, errMsg, debug string) {
 	rec := RequestLog{
 		Time: time.Now().Unix(), KeyNote: keyNote, Model: platformName,
 		Provider: prov.Name, ProviderID: prov.ID, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
-		Latency: latency, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
+		Latency: latency, TTFT: ttft, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
 	}
 	s.db.InsertLog(rec)
-	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency)
+	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency, ttft)
 }
 
 // ---------- 管理端鉴权 ----------

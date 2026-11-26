@@ -132,6 +132,7 @@ type DailyStat struct {
 	ComplTok   int64  `json:"completion_tokens"`
 	CachedTok  int64  `json:"cached_tokens,omitempty"` // 输入侧缓存命中 tokens
 	LatencySum int64  `json:"latency_ms_sum"`
+	TTFTSum    int64  `json:"ttft_ms_sum,omitempty"` // 流式首字时间累计（非流式/失败为 0）
 }
 
 // RequestLog 单次请求日志。
@@ -149,6 +150,7 @@ type RequestLog struct {
 	PromptTok int64  `json:"prompt_tokens,omitempty"`
 	ComplTok  int64  `json:"completion_tokens,omitempty"`
 	CachedTok int64  `json:"cached_tokens,omitempty"` // 输入侧缓存命中 tokens
+	TTFT      int64  `json:"ttft_ms,omitempty"`       // 流式首字时间（毫秒）；非流式或失败为 0
 	Error     string `json:"error,omitempty"`
 	Debug     string `json:"debug,omitempty"` // 调试模式下的请求/响应报文（JSON 字符串）
 }

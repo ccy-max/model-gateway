@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
 	up_key TEXT DEFAULT '',
 	status INTEGER DEFAULT 0,
 	latency_ms INTEGER DEFAULT 0,
+	ttft_ms INTEGER DEFAULT 0,
 	stream INTEGER DEFAULT 0,
 	prompt_tokens INTEGER DEFAULT 0,
 	completion_tokens INTEGER DEFAULT 0,
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 	compl_tok INTEGER DEFAULT 0,
 	cached_tok INTEGER DEFAULT 0,
 	latency_sum INTEGER DEFAULT 0,
+	ttft_sum INTEGER DEFAULT 0,
 	PRIMARY KEY (day, provider_id, model)
 );`)
 	if err != nil {
@@ -92,6 +94,8 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 		"ALTER TABLE daily_stats ADD COLUMN cached_tok INTEGER DEFAULT 0",
 		"ALTER TABLE request_logs ADD COLUMN debug TEXT DEFAULT ''",
 		"ALTER TABLE request_logs ADD COLUMN provider_id TEXT DEFAULT ''",
+		"ALTER TABLE request_logs ADD COLUMN ttft_ms INTEGER DEFAULT 0",
+		"ALTER TABLE daily_stats ADD COLUMN ttft_sum INTEGER DEFAULT 0",
 	} {
 		if _, err := d.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -110,10 +114,10 @@ func (d *DB) RebuildStatsFromLogs() {
 		log.Printf("[db] 重算统计-清理旧聚合失败: %v", err)
 		return
 	}
-	if _, err := d.db.Exec(`INSERT INTO daily_stats (day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum)
+	if _, err := d.db.Exec(`INSERT INTO daily_stats (day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum)
 SELECT date(ts,'unixepoch','localtime') AS day, provider_id, model,
        COUNT(*), SUM(CASE WHEN status=1 THEN 1 ELSE 0 END),
-       SUM(prompt_tokens), SUM(completion_tokens), SUM(cached_tokens), SUM(latency_ms)
+       SUM(prompt_tokens), SUM(completion_tokens), SUM(cached_tokens), SUM(latency_ms), SUM(ttft_ms)
 FROM request_logs GROUP BY day, provider_id, model`); err != nil {
 		log.Printf("[db] 重算统计失败: %v", err)
 		return
@@ -127,9 +131,9 @@ func (d *DB) Close() { _ = d.db.Close() }
 // InsertLog 追加一条请求日志。
 func (d *DB) InsertLog(r RequestLog) {
 	_, err := d.db.Exec(`INSERT INTO request_logs
-(ts,key_note,model,provider,provider_id,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.Time, r.KeyNote, r.Model, r.Provider, r.ProviderID, r.UpModel, r.UpKey, r.Status, r.Latency,
+(ts,key_note,model,provider,provider_id,up_model,up_key,status,latency_ms,ttft_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.Time, r.KeyNote, r.Model, r.Provider, r.ProviderID, r.UpModel, r.UpKey, r.Status, r.Latency, r.TTFT,
 		boolToInt(r.Stream), r.PromptTok, r.ComplTok, r.CachedTok, r.Error, r.Debug)
 	if err != nil {
 		log.Printf("[db] 写请求日志失败: %v", err)
@@ -138,18 +142,19 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
 // UpsertStat 累加一条尝试到每日统计（含失败尝试）。
 // 注意列位：requests 插入即记 1（冲突时 +1），errors 按是否失败记 0/1。
-func (d *DB) UpsertStat(day, providerID, model string, isErr bool, prompt, compl, cached, latency int64) {
+func (d *DB) UpsertStat(day, providerID, model string, isErr bool, prompt, compl, cached, latency, ttft int64) {
 	_, err := d.db.Exec(`INSERT INTO daily_stats
-(day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum)
-VALUES(?,?,?,1,?,?,?,?,?)
+(day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum)
+VALUES(?,?,?,1,?,?,?,?,?,?)
 ON CONFLICT(day,provider_id,model) DO UPDATE SET
 	requests=requests+1,
 	errors=errors+excluded.errors,
 	prompt_tok=prompt_tok+excluded.prompt_tok,
 	compl_tok=compl_tok+excluded.compl_tok,
 	cached_tok=cached_tok+excluded.cached_tok,
-	latency_sum=latency_sum+excluded.latency_sum`,
-		day, providerID, model, boolToInt(isErr), prompt, compl, cached, latency)
+	latency_sum=latency_sum+excluded.latency_sum,
+	ttft_sum=ttft_sum+excluded.ttft_sum`,
+		day, providerID, model, boolToInt(isErr), prompt, compl, cached, latency, ttft)
 	if err != nil {
 		log.Printf("[db] 更新每日统计失败: %v", err)
 	}
@@ -158,7 +163,7 @@ ON CONFLICT(day,provider_id,model) DO UPDATE SET
 // QueryStats 按日期范围（闭区间）取明细与汇总。
 func (d *DB) QueryStats(from, to string) (rows []DailyStat, reqs, errs, ptok, ctok, cktok int64) {
 	rows = []DailyStat{}
-	rs, err := d.db.Query(`SELECT day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum
+	rs, err := d.db.Query(`SELECT day,provider_id,model,requests,errors,prompt_tok,compl_tok,cached_tok,latency_sum,ttft_sum
 FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 	if err != nil {
 		log.Printf("[db] 查统计失败: %v", err)
@@ -167,7 +172,7 @@ FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 	defer rs.Close()
 	for rs.Next() {
 		var s DailyStat
-		if err := rs.Scan(&s.Day, &s.ProviderID, &s.Model, &s.Requests, &s.Errors, &s.PromptTok, &s.ComplTok, &s.CachedTok, &s.LatencySum); err == nil {
+		if err := rs.Scan(&s.Day, &s.ProviderID, &s.Model, &s.Requests, &s.Errors, &s.PromptTok, &s.ComplTok, &s.CachedTok, &s.LatencySum, &s.TTFTSum); err == nil {
 			rows = append(rows, s)
 			reqs += s.Requests
 			errs += s.Errors
@@ -182,7 +187,7 @@ FROM daily_stats WHERE day BETWEEN ? AND ? ORDER BY day DESC`, from, to)
 // QueryLogs 按时间范围取日志，时间升序返回，最多 limit 条（取最新）。
 func (d *DB) QueryLogs(fromTs, toTs int64, limit int) []RequestLog {
 	out := []RequestLog{}
-	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+	rs, err := d.db.Query(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
 FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, toTs, limit)
 	if err != nil {
 		log.Printf("[db] 查日志失败: %v", err)
@@ -192,7 +197,7 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 	for rs.Next() {
 		var r RequestLog
 		var stream int
-		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug); err == nil {
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT); err == nil {
 			r.Stream = stream == 1
 			out = append(out, r)
 		}
@@ -206,13 +211,13 @@ FROM request_logs WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?`, fromTs, to
 
 // QueryLogsRecent 取最新 limit 条日志（新→旧），供「日志」页使用。
 func (d *DB) QueryLogsRecent(limit int) []RequestLog {
-	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
 FROM request_logs ORDER BY ts DESC, id DESC LIMIT ?`, limit)
 }
 
 // QueryLogsPaged 分页取日志（新→旧）：limit 每页条数，offset 偏移。
 func (d *DB) QueryLogsPaged(limit, offset int) []RequestLog {
-	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug
+	return d.queryLogsOrdered(`SELECT ts,key_note,model,provider,up_model,up_key,status,latency_ms,stream,prompt_tokens,completion_tokens,cached_tokens,error,debug,ttft_ms
 FROM request_logs ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, limit, offset)
 }
 
@@ -236,7 +241,7 @@ func (d *DB) queryLogsOrdered(query string, args ...any) []RequestLog {
 	for rs.Next() {
 		var r RequestLog
 		var stream int
-		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug); err == nil {
+		if err := rs.Scan(&r.Time, &r.KeyNote, &r.Model, &r.Provider, &r.UpModel, &r.UpKey, &r.Status, &r.Latency, &stream, &r.PromptTok, &r.ComplTok, &r.CachedTok, &r.Error, &r.Debug, &r.TTFT); err == nil {
 			r.Stream = stream == 1
 			out = append(out, r)
 		}
