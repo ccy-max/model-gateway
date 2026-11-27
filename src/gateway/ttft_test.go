@@ -90,3 +90,22 @@ func TestStreamTTFTReasoningCounts(t *testing.T) {
 		t.Fatalf("推理块应算首字（约 120ms），实际 %dms", ttft)
 	}
 }
+
+// TestStreamTTFTNonStandardField 商汤 SenseNova 用 delta.reasoning（非 reasoning_content）
+// 输出思考内容，也应计入首字；delta.text 同理。
+func TestStreamTTFTNonStandardField(t *testing.T) {
+	for _, field := range []string{"reasoning", "text"} {
+		resp := sseResp(120*time.Millisecond,
+			"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\""+field+"\":\"你好\"}}]}\n\n",
+			"data: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\n",
+		)
+		st := newTestStore(t)
+		s := NewServer(st, "test")
+		w := httptest.NewRecorder()
+		_, _, _, ttft, _, _ := s.streamToClient(w, resp, time.Now())
+		if ttft < 190 || ttft > 1000 {
+			t.Fatalf("delta.%s 应计为首字（约 240ms），实际 %dms", field, ttft)
+		}
+	}
+}

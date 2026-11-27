@@ -716,6 +716,9 @@ type sseChunk struct {
 		Delta struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
+			// 部分上游（如商汤 SenseNova）用非标准字段名输出思考内容
+			Reasoning string `json:"reasoning"`
+			Text      string `json:"text"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
@@ -725,7 +728,8 @@ type sseChunk struct {
 // 重要：在收到第一条有效 data 之前不向客户端写任何内容（响应头也不写），
 // 这样首字超时可以安全重试；committed=true 表示已写出内容，此后的错误只能中止。
 func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, start time.Time) (prompt, compl, cached, ttft int64, committed bool, err error) {
-	flusher, _ := w.(http.Flusher)
+	// ResponseController 会沿 Unwrap 链找到真正支持 Flush 的 ResponseWriter
+	flusher := &flushAdapter{rc: http.NewResponseController(w)}
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "text/event-stream"
@@ -744,9 +748,7 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 			_, _ = fmt.Fprintln(w, l)
 		}
 		pending = nil
-		if flusher != nil {
-			flusher.Flush()
-		}
+		flusher.Flush()
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -764,7 +766,8 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 					}
 					if ttft == 0 {
 						for _, ch := range chunk.Choices {
-							if ch.Delta.Content != "" || ch.Delta.ReasoningContent != "" {
+							if ch.Delta.Content != "" || ch.Delta.ReasoningContent != "" ||
+								ch.Delta.Reasoning != "" || ch.Delta.Text != "" {
 								ttft = time.Since(start).Milliseconds()
 								break
 							}
@@ -782,9 +785,7 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 			continue
 		}
 		_, _ = fmt.Fprintln(w, line)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		flusher.Flush()
 	}
 	if serr := sc.Err(); serr != nil {
 		if !committed {
@@ -2194,6 +2195,13 @@ func (s *Server) Routes() http.Handler {
 	return s.timingMiddleware(s.corsMiddleware(mux))
 }
 
+// flushAdapter 用 ResponseController 刷写，兼容中间件包装过的 ResponseWriter。
+type flushAdapter struct{ rc *http.ResponseController }
+
+func (f *flushAdapter) Flush() {
+	_ = f.rc.Flush()
+}
+
 // statusWriter 记录状态码，供诊断日志使用。
 type statusWriter struct {
 	http.ResponseWriter
@@ -2204,6 +2212,17 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Flush 透传：不实现它会导致包装后的 ResponseWriter 丢失 http.Flusher，
+// 流式响应（SSE）无法逐行刷写，客户端看到成块的「一顿一顿」输出。
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap 让 http.ResponseController 能穿透到原始 ResponseWriter。
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // timingMiddleware 记录慢请求（>800ms）与关键诊断路径（登录/鉴权/统计/面板），
 // 用于区分「服务端慢」与「链路/客户端慢」。
