@@ -516,6 +516,17 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 	defer watch.Stop()
 	defer cancel()
 
+	// 流式请求：先建好 SSE 写出口并在等待上游期间发心跳，
+	// 因为部分上游（如商汤）连响应头都要等到首字才返回，不心跳客户端会先超时断开。
+	var sw *sseWriter
+	if c.wantStream {
+		sw = newSSEWriter(c.w, "text/event-stream")
+		if hb := s.heartbeatSec(); hb > 0 {
+			sw.StartHeartbeat(time.Duration(hb) * time.Second)
+			defer sw.StopHeartbeat()
+		}
+	}
+
 	var upReqBody []byte
 	resp, err := c.up.Chat(ctx, c.pmod.Model, c.payload, c.wantStream, c.pk.Key, &upReqBody)
 	if err == nil {
@@ -539,6 +550,11 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 		s.router.MarkProviderFailure(c.prov.ID, 3, 60)
 		dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, 0, nil)
 		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
+		if sw != nil && sw.Committed() {
+			// 已发过心跳（客户端已收到 200）：只能把错误写进流里，无法再重试
+			sw.ErrorEvent(msg)
+			return attemptResult{handled: true, status: http.StatusOK, errMsg: msg}, false
+		}
 		return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
 	}
 
@@ -553,7 +569,7 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 				resp.Body = newTeeBody(resp.Body, buf)
 			}
 			var serr error
-			prompt, compl, cached, ttft, committed, serr = s.streamToClient(c.w, resp, start)
+			prompt, compl, cached, ttft, committed, serr = s.streamWith(sw, resp, start)
 			if buf != nil {
 				respHead = buf.b
 			}
@@ -745,18 +761,26 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 		ct = "text/event-stream"
 	}
 	sw := newSSEWriter(w, ct)
-
 	// 首字前心跳：上游思考/排队期间定期发 SSE 注释帧，避免客户端因「长时间无数据」而断开。
 	// 代价：一旦发出心跳就已向客户端输出字节，本次请求不再具备「首字超时重试」能力。
-	hbSec := 0
-	if s.store != nil {
-		s.store.View(func(c *Config) { hbSec = c.Settings.PreCommitHeartbeatSec })
-	}
-	if hbSec > 0 {
+	if hbSec := s.heartbeatSec(); hbSec > 0 {
 		sw.StartHeartbeat(time.Duration(hbSec) * time.Second)
 		defer sw.StopHeartbeat()
 	}
+	return s.streamWith(sw, resp, start)
+}
 
+// heartbeatSec 读取「首字前心跳」间隔；<=0 表示关闭。
+func (s *Server) heartbeatSec() int {
+	hb := 0
+	if s.store != nil {
+		s.store.View(func(c *Config) { hb = c.Settings.PreCommitHeartbeatSec })
+	}
+	return hb
+}
+
+// streamWith 把上游 SSE 逐行转给客户端（sw 可能已经因心跳提交过响应头）。
+func (s *Server) streamWith(sw *sseWriter, resp *http.Response, start time.Time) (prompt, compl, cached, ttft int64, committed bool, err error) {
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -854,6 +878,23 @@ func (sw *sseWriter) Line(line string) {
 	}
 	_, _ = fmt.Fprintln(sw.w, line)
 	_ = sw.rc.Flush()
+}
+
+// Raw 原样写一行并刷写（用于错误事件等非上游原文内容）。
+func (sw *sseWriter) Raw(line string) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if !sw.committed {
+		sw.commitLocked()
+	}
+	_, _ = fmt.Fprint(sw.w, line)
+	_ = sw.rc.Flush()
+}
+
+// ErrorEvent 向已提交的流写入一条 OpenAI 风格的错误事件后收尾。
+func (sw *sseWriter) ErrorEvent(msg string) {
+	b, _ := json.Marshal(map[string]any{"error": map[string]any{"message": msg, "type": "upstream_error", "code": "upstream_error"}})
+	sw.Raw("data: " + string(b) + "\n\ndata: [DONE]\n\n")
 }
 
 func (sw *sseWriter) Committed() bool {
