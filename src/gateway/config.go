@@ -128,6 +128,7 @@ type Settings struct {
 	FirstByteTimeoutSec  int  `json:"first_byte_timeout_sec"`      // 首字节超时（秒），默认 120；0=关闭。超时自动重试
 	StallTimeoutSec      int  `json:"stall_timeout_sec"`           // 流中停滞超时（秒），默认 300；0=关闭。只中止不重试
 	TimeoutRetries       int  `json:"timeout_retries"`             // 超时后同 key 重试次数，默认 1
+	PreCommitHeartbeatSec int `json:"pre_commit_heartbeat_sec"`    // 首字前心跳间隔（秒），默认 5；0=关闭。防止客户端因长时间无数据而断开
 	DebugPayloads        bool `json:"debug_payloads"`              // 开启后请求日志额外记录请求/响应报文
 	LogRetentionDays     int  `json:"log_retention_days"`          // 请求日志保留天数（<=0 视为 30）
 }
@@ -209,6 +210,16 @@ func (c *Config) Normalize() {
 	}
 	if c.Settings.TimeoutRetries > 3 {
 		c.Settings.TimeoutRetries = 3
+	}
+	// 首字前心跳：0 = 未配置（用默认 5s）；-1 = 关闭（归一化为 0）
+	if c.Settings.PreCommitHeartbeatSec == 0 {
+		c.Settings.PreCommitHeartbeatSec = 5
+	}
+	if c.Settings.PreCommitHeartbeatSec < -1 {
+		c.Settings.PreCommitHeartbeatSec = -1
+	}
+	if c.Settings.PreCommitHeartbeatSec > 60 {
+		c.Settings.PreCommitHeartbeatSec = 60
 	}
 	if c.Settings.ModelsTimeoutSec <= 0 {
 		c.Settings.ModelsTimeoutSec = 15

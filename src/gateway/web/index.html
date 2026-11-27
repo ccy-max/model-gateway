@@ -430,6 +430,11 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
             <p class="field-hint">超过该秒数上游仍无任何响应即判超时；超时后自动重试（先同密钥、再换密钥/供应商），能救回不少「偶发卡住」的请求。</p>
           </div>
           <div class="form-row">
+            <label class="label">首字前心跳（秒，默认 5，-1=关闭）</label>
+            <input id="setHeartbeat" class="input input-sm" type="number" style="width:140px">
+            <p class="field-hint">上游在「思考」或排队时一个字节都不发，客户端容易判定超时并断开（日志显示「中断」）。开启后每隔该秒数发一个 SSE 注释帧 <code>: keepalive</code>，客户端会忽略它但连接不会被视为空闲。代价：发出心跳即视为已开始输出，本次请求不再自动重试首字超时。</p>
+          </div>
+          <div class="form-row">
             <label class="label">停滞超时（秒，默认 300，-1=关闭）</label>
             <input id="setStall" class="input input-sm" type="number" style="width:140px">
             <p class="field-hint">流式输出中途超过该秒数没有新数据即中断；因为已经开始输出，只能中止不能重试。</p>
@@ -620,6 +625,7 @@ print(resp.choices[0].message.content)</pre>
             <li><code>401 invalid_api_key</code>：客户端密钥不对，去「密钥」页核对。</li>
             <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
             <li><code>429 rate_limited</code>：所有 key 的并发/时间窗限流都已满，稍后重试，或提高 key 的上限 / 增加密钥。</li>
+            <li><b>首字前心跳</b>：上游思考时间长（大上下文推理模型常见 10~60 秒）时，客户端可能先超时断开，日志记为「中断」。开启心跳后网关会定期发 <code>: keepalive</code> 注释帧保活，客户端就不会再误判空闲。</li>
             <li><b>结果三态</b>：<span class="badge badge-ok">成功</span> 正常完成；<span class="badge badge-err">失败</span> 上游报错（计入错误率）；<span class="badge badge-warn">中断</span> 客户端自己断开了连接（超时、取消、关闭页面），不计入错误率、也不冷却密钥/供应商。</li>
             <li><b>首字超时 / 停滞超时</b>：错误信息里会写明「首字超时（N 秒内上游无响应）」或「流中停滞超时（N 秒无新数据）」，前者已自动重试过，后者是流式输出中途中断。</li>
             <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」或「日志」看具体上游错误。</li>
@@ -1441,6 +1447,8 @@ async function loadSettings(){
   if(stl)stl.value=(s.stall_timeout_sec==null?300:s.stall_timeout_sec);
   const rt=document.getElementById('setRetries');
   if(rt)rt.value=(s.timeout_retries==null?1:s.timeout_retries);
+  const hb=document.getElementById('setHeartbeat');
+  if(hb)hb.value=(s.pre_commit_heartbeat_sec==null?5:s.pre_commit_heartbeat_sec);
   checkChatTimeout();
 }
 // 对话超时异常警示（>600s 提示，>1800s 会被服务端钳制）
@@ -1490,7 +1498,7 @@ function importConfig(input){
   input.value='';
 }
 async function saveSettings(){
-  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,exhausted_cooldown_seconds:+document.getElementById('setExhausted').value||1800,first_byte_timeout_sec:+document.getElementById('setFirstByte').value,stall_timeout_sec:+document.getElementById('setStall').value,timeout_retries:+document.getElementById('setRetries').value,debug_payloads:document.getElementById('setDebug').value==='1',log_retention_days:+document.getElementById('setLogDays').value||30};
+  const body={chat_timeout_seconds:+document.getElementById('setChat').value,models_timeout_seconds:+document.getElementById('setModels').value,cooldown_base_seconds:+document.getElementById('setCdBase').value,cooldown_max_seconds:+document.getElementById('setCdMax').value,exhausted_cooldown_seconds:+document.getElementById('setExhausted').value||1800,first_byte_timeout_sec:+document.getElementById('setFirstByte').value,stall_timeout_sec:+document.getElementById('setStall').value,timeout_retries:+document.getElementById('setRetries').value,pre_commit_heartbeat_sec:+document.getElementById('setHeartbeat').value,debug_payloads:document.getElementById('setDebug').value==='1',log_retention_days:+document.getElementById('setLogDays').value||30};
   try{await api('/admin/api/settings',{method:'PUT',body:JSON.stringify(body)});toast('已保存')}catch(e){toast(e.message,true)}
 }
 async function changePwd(){

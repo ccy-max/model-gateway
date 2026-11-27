@@ -740,28 +740,23 @@ type sseChunk struct {
 // 重要：在收到第一条有效 data 之前不向客户端写任何内容（响应头也不写），
 // 这样首字超时可以安全重试；committed=true 表示已写出内容，此后的错误只能中止。
 func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, start time.Time) (prompt, compl, cached, ttft int64, committed bool, err error) {
-	// ResponseController 会沿 Unwrap 链找到真正支持 Flush 的 ResponseWriter
-	flusher := &flushAdapter{rc: http.NewResponseController(w)}
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "text/event-stream"
 	}
-	var pending []string
-	commit := func() {
-		if committed {
-			return
-		}
-		committed = true
-		w.Header().Set("Content-Type", ct)
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-		for _, l := range pending {
-			_, _ = fmt.Fprintln(w, l)
-		}
-		pending = nil
-		flusher.Flush()
+	sw := newSSEWriter(w, ct)
+
+	// 首字前心跳：上游思考/排队期间定期发 SSE 注释帧，避免客户端因「长时间无数据」而断开。
+	// 代价：一旦发出心跳就已向客户端输出字节，本次请求不再具备「首字超时重试」能力。
+	hbSec := 0
+	if s.store != nil {
+		s.store.View(func(c *Config) { hbSec = c.Settings.PreCommitHeartbeatSec })
 	}
+	if hbSec > 0 {
+		sw.StartHeartbeat(time.Duration(hbSec) * time.Second)
+		defer sw.StopHeartbeat()
+	}
+
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -788,17 +783,13 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 				}
 			}
 		}
-		if !committed {
-			pending = append(pending, line)
-			// 第一条有效 data 到达即提交；缓冲过多（如大量心跳注释）也强制提交，避免内存膨胀
-			if (isData && payload != "") || len(pending) > 2000 {
-				commit()
-			}
-			continue
+		sw.Line(line)
+		// 第一条有效 data 到达即提交；缓冲过多（如大量注释帧）也强制提交，避免内存膨胀
+		if !sw.Committed() && ((isData && payload != "") || sw.PendingLen() > 2000) {
+			sw.Commit()
 		}
-		_, _ = fmt.Fprintln(w, line)
-		flusher.Flush()
 	}
+	committed = sw.Committed()
 	if serr := sc.Err(); serr != nil {
 		if !committed {
 			return 0, 0, 0, 0, false, serr
@@ -809,6 +800,114 @@ func (s *Server) streamToClient(w http.ResponseWriter, resp *http.Response, star
 		return 0, 0, 0, 0, false, fmt.Errorf("上游未返回任何数据")
 	}
 	return prompt, compl, cached, ttft, true, nil
+}
+
+// sseWriter 统一管理 SSE 输出：未提交前先攒行（保证可重试），提交后逐行刷写；
+// 另支持首字前心跳注释帧。多个 goroutine（扫描循环 / 心跳）写同一响应，需加锁。
+type sseWriter struct {
+	w         http.ResponseWriter
+	rc        *http.ResponseController
+	ct        string
+	mu        sync.Mutex
+	committed bool
+	closed    bool
+	pending   []string
+	stop      chan struct{}
+}
+
+func newSSEWriter(w http.ResponseWriter, ct string) *sseWriter {
+	return &sseWriter{w: w, rc: http.NewResponseController(w), ct: ct}
+}
+
+// commitLocked 写出响应头与缓存的待发行（调用方需持锁）。
+func (sw *sseWriter) commitLocked() {
+	if sw.committed {
+		return
+	}
+	sw.committed = true
+	h := sw.w.Header()
+	h.Set("Content-Type", sw.ct)
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Accel-Buffering", "no")
+	h.Set("Connection", "keep-alive")
+	sw.w.WriteHeader(http.StatusOK)
+	for _, l := range sw.pending {
+		_, _ = fmt.Fprintln(sw.w, l)
+	}
+	sw.pending = nil
+	_ = sw.rc.Flush()
+}
+
+func (sw *sseWriter) Commit() {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.commitLocked()
+}
+
+// Line 写一行上游原文；未提交时先攒起来。
+func (sw *sseWriter) Line(line string) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if !sw.committed {
+		sw.pending = append(sw.pending, line)
+		return
+	}
+	_, _ = fmt.Fprintln(sw.w, line)
+	_ = sw.rc.Flush()
+}
+
+func (sw *sseWriter) Committed() bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.committed
+}
+
+func (sw *sseWriter) PendingLen() int {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return len(sw.pending)
+}
+
+// StartHeartbeat 每 d 发一个 SSE 注释帧（": keepalive"），客户端会忽略但连接保持活跃。
+func (sw *sseWriter) StartHeartbeat(d time.Duration) {
+	sw.mu.Lock()
+	if sw.stop != nil {
+		sw.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	sw.stop = stop
+	sw.mu.Unlock()
+	go func() {
+		t := time.NewTicker(d)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				sw.mu.Lock()
+				if sw.closed {
+					sw.mu.Unlock()
+					return
+				}
+				sw.commitLocked()
+				_, _ = fmt.Fprint(sw.w, ": keepalive\n\n")
+				_ = sw.rc.Flush()
+				sw.mu.Unlock()
+			}
+		}
+	}()
+}
+
+func (sw *sseWriter) StopHeartbeat() {
+	sw.mu.Lock()
+	if sw.stop != nil {
+		close(sw.stop)
+		sw.stop = nil
+	}
+	sw.closed = true
+	sw.mu.Unlock()
 }
 
 // jsonToClient 非流式透传并提取 usage。
@@ -2018,6 +2117,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			c.Settings.FirstByteTimeoutSec = body.FirstByteTimeoutSec
 			c.Settings.StallTimeoutSec = body.StallTimeoutSec
 			c.Settings.TimeoutRetries = body.TimeoutRetries
+			hb := body.PreCommitHeartbeatSec
+			if hb < -1 {
+				hb = -1
+			}
+			if hb > 60 {
+				hb = 60
+			}
+			c.Settings.PreCommitHeartbeatSec = hb
 			if body.ExhaustedCooldownSec > 0 {
 				v := body.ExhaustedCooldownSec
 				if v < 60 {
@@ -2238,13 +2345,6 @@ func cancelMsg(committed bool, err error) string {
 		return "客户端已断开（已输出部分内容）"
 	}
 	return "客户端已断开（上游尚未返回任何数据）"
-}
-
-// flushAdapter 用 ResponseController 刷写，兼容中间件包装过的 ResponseWriter。
-type flushAdapter struct{ rc *http.ResponseController }
-
-func (f *flushAdapter) Flush() {
-	_ = f.rc.Flush()
 }
 
 // statusWriter 记录状态码，供诊断日志使用。
