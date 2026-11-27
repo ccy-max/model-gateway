@@ -315,7 +315,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
         <div class="card">
           <div class="card-head"><h3>最近请求</h3></div>
           <div class="table-wrap">
-            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th><th style="width:60px">详情</th></tr></thead><tbody></tbody></table>
+            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
           </div>
         </div>
       </div>
@@ -337,10 +337,10 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
           <button class="btn btn-outline btn-sm" onclick="loadLogs()"><span class="ic" data-ic="refresh"></span>刷新</button>
         </div>
       </div>
-      <p class="muted-xs" style="margin:-6px 0 14px">记录每次真实调用（含失败尝试，新→旧）。在「设置」开启调试模式后，可点「详情」查看请求/响应报文。</p>
+      <p class="muted-xs" style="margin:-6px 0 14px">记录每次真实调用（含失败尝试，新→旧）。点击「结果」徽章可查看详情；在「设置」开启调试模式后还能看到请求/响应报文。</p>
       <div class="card" style="padding:14px 20px">
         <div class="table-wrap">
-          <table id="logsTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th><th></th></tr></thead><tbody></tbody></table>
+          <table id="logsTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </section>
@@ -423,7 +423,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
               <option value="0">关闭（默认，只记录元数据）</option>
               <option value="1">开启（额外记录报文，供排查）</option>
             </select>
-            <p class="field-hint">开启后「日志」页每条记录可点「详情」查看客户端请求、上游请求与上游响应报文（各截断保存）。日志体积会明显增大，排查完建议关闭。</p>
+            <p class="field-hint">开启后点击「日志」或「统计」页的结果徽章，可查看客户端请求、上游请求与上游响应报文（各截断保存）；关闭时失败记录仍保存状态码和上游错误响应。日志体积会明显增大，排查完建议关闭。</p>
           </div>
           <div class="form-row">
             <label class="label">日志保存天数</label>
@@ -608,7 +608,7 @@ print(resp.choices[0].message.content)</pre>
           <ul class="guide-steps">
             <li>日志记录每次尝试：时间、客户端密钥、平台模型、供应商、上游模型、上游密钥、延迟、tokens、结果与错误信息。</li>
             <li>支持服务端分页与按条件筛选；保存天数在「设置」里调整（默认 30 天，过期自动清理）。</li>
-            <li><b>调试模式</b>（设置页开关）：开启后记录客户端与上游的完整请求/响应报文（各截断 8KB），日志详情里可查看，排障用；默认关闭。</li>
+            <li><b>调试模式</b>（设置页开关）：开启后记录客户端与上游的完整请求/响应报文（各截断 8KB），点击日志/统计页的结果徽章即可查看；即使关闭，失败记录也会自动保存 HTTP 状态码与上游错误响应，排障用。</li>
           </ul>
         </div>
         <div class="card" id="g-9">
@@ -1086,9 +1086,8 @@ async function loadStats(){
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${statusBadge(l,'STATLOGS')}</td>
-    <td>${(l.error||l.debug)?`<button class="btn btn-outline btn-sm" onclick="showLogDetail('STATLOGS',${(window.STATLOGS||[]).indexOf(l)})">详情</button>`:''}</td></tr>`).join('')
-    ||'<tr><td colspan="12"><div class="empty">该范围内暂无请求日志</div></td></tr>';
+    <td>${statusBadge(l,'STATLOGS')}</td></tr>`).join('')
+    ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求日志</div></td></tr>';
 }
 async function probeAll(){
   document.getElementById('probeResult').innerHTML='<span class="muted-xs">探测中...</span>';
@@ -1703,9 +1702,8 @@ async function loadLogs(){
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${statusBadge(l,'LOGROWS')}</td>
-    <td>${(l.error||l.debug)?`<button class="btn btn-outline btn-sm" onclick="showLogDetail('LOGROWS',${i})">详情</button>`:''}</td></tr>`).join('')
-    ||'<tr><td colspan="12"><div class="empty">暂无请求日志</div></td></tr>';
+    <td>${statusBadge(l,'LOGROWS')}</td></tr>`).join('')
+    ||'<tr><td colspan="11"><div class="empty">暂无请求日志</div></td></tr>';
   }catch(e){toast(e.message,true)}
 }
 // 结果徽章：失败/中断可点击弹窗看详情
@@ -1715,7 +1713,7 @@ function statusBadge(l,rowsName){
   const open='onclick="showLogDetail(\''+rowsName+'\','+idx+')" style="cursor:pointer;text-decoration:underline dotted"';
   if(l.status===2)return '<span class="badge badge-warn" '+open+' title="点击查看中断原因">中断</span>';
   if(l.error)return '<span class="badge badge-err" '+open+' title="点击查看失败原因">失败</span>';
-  return '<span class="badge badge-ok">成功</span>';
+  return '<span class="badge badge-ok" '+open+' title="点击查看请求详情">成功</span>';
 }
 
 // 失败详情弹窗：展示错误摘要、HTTP 状态码、上游返回 JSON、请求报文。
