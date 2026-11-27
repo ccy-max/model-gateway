@@ -1854,14 +1854,18 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	rows = merged
 
 	// 汇总口径与明细一致：有业务口径用业务口径，历史行（creq=0）退回尝试数
-	var creq, cfail int64
+	var creq, cfail, legacyRows int64
+	finalDays := s.db.DaysWithFinal()
 	for _, r := range rows {
-		if r.CReq > 0 {
+		if r.CReq > 0 && finalDays[r.Day] {
 			creq += r.CReq
 			cfail += r.CFail
 		} else {
 			creq += r.Requests
 			cfail += r.Errors
+			if r.Requests > 0 {
+				legacyRows++
+			}
 		}
 	}
 
@@ -1870,6 +1874,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	logs := s.db.QueryLogs(fromTs, toTs, 20) // 最近请求只展示 20 条
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from": from, "to": to, "rows": rows,
+		"legacy_rows": legacyRows,
 		"totals": map[string]any{"requests": reqs, "errors": errs, "client_requests": creq, "client_errors": cfail, "prompt_tokens": ptok, "completion_tokens": ctok, "cached_tokens": cktok, "total_tokens": ptok + ctok},
 		"logs":   logs,
 	})

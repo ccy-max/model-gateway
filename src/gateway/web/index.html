@@ -996,8 +996,9 @@ async function loadStats(){
   const cfail=t.client_requests>0?t.client_errors:t.errors;
   const okReq=creq-cfail;
   const cacheRate=t.prompt_tokens>0?((t.cached_tokens||0)*100/t.prompt_tokens).toFixed(1)+'%':'—';
+  const legacyHint=(s.legacy_rows>0)?' · 含 '+s.legacy_rows+' 行历史数据按尝试计':'';
   document.getElementById('statCards').innerHTML=
-    card('请求数',creq,(creq!==t.requests?'尝试 '+fmtNum(t.requests)+' 次':'')+(rangeTxt?(creq!==t.requests?' · ':'')+rangeTxt:''))+
+  card('请求数',creq,(creq!==t.requests?'尝试 '+fmtNum(t.requests)+' 次':'')+(rangeTxt?(creq!==t.requests?' · ':'')+rangeTxt:'')+legacyHint)+
     card('错误数',cfail,cfail?'成功率 '+(creq?Math.round(okReq*100/creq):0)+'%':'无失败')+
     card('输入 tokens',fmtNum(t.prompt_tokens),'原「提示 tokens」',t.prompt_tokens)+
     card('输出 tokens',fmtNum(t.completion_tokens),'原「补全 tokens」',t.completion_tokens)+

@@ -188,6 +188,23 @@ ON CONFLICT(day,provider_id,model) DO UPDATE SET
 	}
 }
 
+// DaysWithFinal 返回存在 final=1 日志的日期（该日期起才有真正的业务请求口径）。
+func (d *DB) DaysWithFinal() map[string]bool {
+	out := map[string]bool{}
+	rs, err := d.db.Query(`SELECT DISTINCT date(ts,'unixepoch','localtime') FROM request_logs WHERE final=1`)
+	if err != nil {
+		return out
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var day string
+		if err := rs.Scan(&day); err == nil {
+			out[day] = true
+		}
+	}
+	return out
+}
+
 // FinalizeAttempt 把某次业务请求的最后一条尝试标记为 final（成功已由写入方直接标记）。
 // 用于「重试/换密钥/换供应商全部失败」后收尾，保证一次客户端请求只计 1 次业务请求。
 // 幂等：最后一条已是 final=1 时不做任何事。
