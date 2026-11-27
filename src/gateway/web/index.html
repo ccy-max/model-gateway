@@ -315,7 +315,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
         <div class="card">
           <div class="card-head"><h3>最近请求</h3></div>
           <div class="table-wrap">
-            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th></tr></thead><tbody></tbody></table>
+            <table id="logTable"><thead><tr><th>时间</th><th>密钥</th><th>平台模型</th><th>供应商</th><th>上游模型</th><th>上游密钥</th><th>延迟</th><th>首字</th><th>解码速度 (tok/s)</th><th>tokens</th><th>结果</th><th style="width:60px">详情</th></tr></thead><tbody></tbody></table>
           </div>
         </div>
       </div>
@@ -824,6 +824,7 @@ print(resp.choices[0].message.content)</pre>
 <div class="overlay" id="mLogDetail" style="display:none">
   <div class="modal" style="max-width:860px">
     <div class="modal-title">请求详情 <span class="muted-xs" id="mLogTitle"></span></div>
+    <div id="logDetailSummary"></div>
     <div id="logDetailBody" style="max-height:70vh;overflow:auto"></div>
     <div class="modal-foot">
       <button class="btn btn-secondary btn-sm" onclick="closeModal('mLogDetail')">关闭</button>
@@ -1077,14 +1078,17 @@ async function loadStats(){
     <td>${avgTTFT(r.ttft_ms_sum,r.ttft_n)}</td>
     <td title="解码耗时 = 累计耗时 ${((r.latency_ms_sum||0)/1000).toFixed(1)}s − 首字 ${((r.ttft_ms_sum||0)/1000).toFixed(1)}s">${decodeSpeed(r.completion_tokens,r.latency_ms_sum,r.ttft_ms_sum)}</td></tr>`).join('')
     ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求</div></td></tr>';
-  document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
+  const statLogs=(s.logs||[]).slice().reverse();
+  window.STATLOGS=statLogs;
+  document.querySelector('#logTable tbody').innerHTML=statLogs.map(l=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
     <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs" title="${esc(l.upstream_key||'')}">${esc(upKeyLabel(l.provider,l.upstream_key))}</td><td>${l.latency_ms} ms</td>
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${l.status===2?`<span class="badge badge-warn" title="${esc(l.error||'客户端已断开')}">中断</span>`:(l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>')}</td></tr>`).join('')
-    ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求日志</div></td></tr>';
+    <td>${statusBadge(l,'STATLOGS')}</td>
+    <td>${(l.error||l.debug)?`<button class="btn btn-outline btn-sm" onclick="showLogDetail('STATLOGS',${(window.STATLOGS||[]).indexOf(l)})">详情</button>`:''}</td></tr>`).join('')
+    ||'<tr><td colspan="12"><div class="empty">该范围内暂无请求日志</div></td></tr>';
 }
 async function probeAll(){
   document.getElementById('probeResult').innerHTML='<span class="muted-xs">探测中...</span>';
@@ -1699,27 +1703,57 @@ async function loadLogs(){
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${l.status===2?`<span class="badge badge-warn" title="${esc(l.error||'客户端已断开')}">中断</span>`:(l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>')}</td>
-    <td>${l.debug?`<button class="btn btn-outline btn-sm" onclick="showLogDetail(${i})">详情</button>`:''}</td></tr>`).join('')
+    <td>${statusBadge(l,'LOGROWS')}</td>
+    <td>${(l.error||l.debug)?`<button class="btn btn-outline btn-sm" onclick="showLogDetail('LOGROWS',${i})">详情</button>`:''}</td></tr>`).join('')
     ||'<tr><td colspan="12"><div class="empty">暂无请求日志</div></td></tr>';
   }catch(e){toast(e.message,true)}
 }
-function showLogDetail(i){
-  const l=LOGROWS[i];
+// 结果徽章：失败/中断可点击弹窗看详情
+function statusBadge(l,rowsName){
+  const rows=(rowsName==='STATLOGS')?(window.STATLOGS||[]):LOGROWS;
+  const idx=rows.indexOf(l);
+  const open='onclick="showLogDetail(\''+rowsName+'\','+idx+')" style="cursor:pointer;text-decoration:underline dotted"';
+  if(l.status===2)return '<span class="badge badge-warn" '+open+' title="点击查看中断原因">中断</span>';
+  if(l.error)return '<span class="badge badge-err" '+open+' title="点击查看失败原因">失败</span>';
+  return '<span class="badge badge-ok">成功</span>';
+}
+
+// 失败详情弹窗：展示错误摘要、HTTP 状态码、上游返回 JSON、请求报文。
+// rowsName 指定数据来自哪个数组（日志页 LOGROWS / 统计页 STATLOGS）。
+function showLogDetail(rowsName,i){
+  const rows=(rowsName==='STATLOGS')?(window.STATLOGS||[]):LOGROWS;
+  const l=rows[i];
   if(!l)return;
   document.getElementById('mLogTitle').textContent='· '+(l.model||'')+' · '+fmtTime(l.time)+(l.req_id?' · #'+l.req_id:'');
   let d=null;
   try{d=JSON.parse(l.debug)}catch(e){}
   const sec=(title,txt)=>'<div style="margin-bottom:14px"><div class="label" style="margin-bottom:4px">'+title+'</div><pre class="guide-pre" style="max-height:260px;white-space:pre-wrap">'+esc(txt||'(空)')+'</pre></div>';
+
+  // ── 顶部摘要：错误原因 + 关键指标 ──
+  const kind=l.status===2?'客户端中断':(l.error?'上游失败':'成功');
+  const badge=l.status===2?'badge-warn':(l.error?'badge-err':'badge-ok');
+  let httpStatus=null;
+  if(d&&d.http_status!=null)httpStatus=d.http_status;
+  else if(d&&d.upstream_response&&d.upstream_response.status!=null)httpStatus=d.upstream_response.status;
+  else{const m=(l.error||'').match(/^(\d{3})\s/);if(m)httpStatus=Number(m[1]);} // 历史记录从错误文案提取
+  let sum='<div style="padding:10px 12px;margin-bottom:16px;border:1px solid var(--border);border-radius:8px;background:var(--card)">';
+  sum+='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="badge '+badge+'">'+kind+'</span>';
+  if(httpStatus!=null)sum+='<span class="badge '+(httpStatus>=400?'badge-err':'badge-ok')+'">HTTP '+httpStatus+'</span>';
+  sum+='<span class="muted-xs">'+esc(l.provider||'-')+' · '+esc(l.upstream_model||l.model||'')+'</span></div>';
+  if(l.error)sum+='<div style="margin-top:8px;font-weight:500">'+esc(l.error)+'</div>';
+  sum+='<div class="muted-xs" style="margin-top:6px">耗时 '+l.latency_ms+' ms · 首字 '+(l.ttft_ms?l.ttft_ms+' ms':'-')+' · tokens '+(l.prompt_tokens||0)+' / '+(l.completion_tokens||0)+'</div>';
+  sum+='</div>';
+  document.getElementById('logDetailSummary').innerHTML=sum;
+
   let html='';
   if(d){
-    html+=sec('客户端请求',typeof d.client_request==='string'?d.client_request:JSON.stringify(d.client_request,null,2));
+    if(d.client_request)html+=sec('客户端请求',typeof d.client_request==='string'?d.client_request:JSON.stringify(d.client_request,null,2));
     const ur=d.upstream_request||{};
     html+=sec('上游请求（'+(ur.url||'')+' · 密钥 '+(ur.key||'')+'）','model: '+(ur.model||'')+'\n'+(ur.body||''));
     const rp=d.upstream_response||{};
     html+=sec('上游响应（HTTP '+(rp.status!=null?rp.status:'-')+'）',rp.body||'');
   }else{
-    html=sec('调试数据',l.debug||'');
+    html=sec('调试数据',l.debug||'(未记录报文；可在设置页开启调试模式)');
   }
   const upNote=KEYNOTE_MAP&&KEYNOTE_MAP.get((l.provider||'')+'|'+(l.upstream_key||''));
   if(upNote){

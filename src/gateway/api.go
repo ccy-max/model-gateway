@@ -585,6 +585,9 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 					msg = lbl
 				}
 				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+				if dbg == "" {
+					dbg = buildFailureDiagnostic(resp.StatusCode, respHead, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask)
+				}
 				if timeoutKind == 0 && clientGone(c.r, serr) {
 					resp.Body.Close()
 					s.recordAttemptStatus(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, statusCanceled, cancelMsg(committed, serr), dbg, c.reqID, false)
@@ -617,6 +620,9 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 				}
 				resp.Body.Close()
 				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+				if dbg == "" {
+					dbg = buildFailureDiagnostic(resp.StatusCode, respHead, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask)
+				}
 				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 				s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
 				s.router.MarkProviderFailure(c.prov.ID, 3, 60)
@@ -637,6 +643,9 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 	failoverable := resp.StatusCode >= 500 || resp.StatusCode == 429 ||
 		resp.StatusCode == 401 || resp.StatusCode == 402 || resp.StatusCode == 403 || resp.StatusCode == 408
 	dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, body)
+	if dbg == "" {
+		dbg = buildFailureDiagnostic(resp.StatusCode, body, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask)
+	}
 	s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, fmt.Sprintf("%d %s", resp.StatusCode, msg), dbg, c.reqID, false)
 	switch {
 	case resp.StatusCode == http.StatusPaymentRequired:
@@ -723,6 +732,26 @@ func buildDebugPayload(clientReq string, upReq []byte, upURL, model, keyMask str
 		return ""
 	}
 	return truncate(string(b), 2*debugCap)
+}
+
+// buildFailureDiagnostic 失败时无条件保存的诊断信息（不受 debug 开关影响）。
+// 内容为 HTTP 状态码 + 上游响应片段 + 请求目标，供失败详情弹窗快速定位原因。
+func buildFailureDiagnostic(status int, respBody []byte, upURL, model, keyMask string) string {
+	d := map[string]any{
+		"http_status": status,
+		"upstream_request": map[string]any{
+			"url": upURL, "model": model, "key": keyMask,
+		},
+		"upstream_response": map[string]any{
+			"status": status,
+			"body":   truncate(string(respBody), debugCap),
+		},
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // usageExtras 从 usage 对象里提取 缓存命中 tokens：
