@@ -877,6 +877,31 @@ function fmtNum(n){
   if(abs>=1e4)return (n/1e4).toFixed(1)+' 万';
   return String(n);
 }
+// 上游密钥「掩码 → 备注」映射缓存：日志里优先显示备注（如「谷歌邮箱」）
+let KEYNOTE_MAP=null;
+function maskKeyLikeGo(k){
+  k=String(k||'');
+  return k.length<=14?k:k.slice(0,8)+'...'+k.slice(-4);
+}
+async function ensureKeyNotes(){
+  if(KEYNOTE_MAP)return KEYNOTE_MAP;
+  KEYNOTE_MAP=new Map();
+  try{
+    const ps=await api('/admin/api/providers');
+    (ps||[]).forEach(p=>{
+      (p.keys||[]).forEach(k=>{
+        if(k.note)KEYNOTE_MAP.set((p.name||'')+'|'+maskKeyLikeGo(k.key),k.note);
+      });
+    });
+  }catch(e){}
+  return KEYNOTE_MAP;
+}
+// 日志单元格：有备注显示备注，否则显示掩码
+function upKeyLabel(provider,mask){
+  const note=KEYNOTE_MAP&&KEYNOTE_MAP.get((provider||'')+'|'+(mask||''));
+  return note||mask||'-';
+}
+
 // 生成速度：输出 tokens ÷ 耗时（秒）。
 function tokSpeed(completionTokens,ms){
   ms=Number(ms)||0;
@@ -987,6 +1012,7 @@ function applyStatRange(){
 }
 async function loadStats(){
   const s=await api('/admin/api/stats'+statQuery());
+  await ensureKeyNotes();
   const tick=document.getElementById('statTick');
   if(tick)tick.textContent='10s 自动刷新 · 更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
   const t=s.totals;
@@ -1015,7 +1041,7 @@ async function loadStats(){
     ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求</div></td></tr>';
   document.querySelector('#logTable tbody').innerHTML=(s.logs||[]).slice().reverse().map(l=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
-    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs" title="${esc(l.upstream_key||'')}">${esc(upKeyLabel(l.provider,l.upstream_key))}</td><td>${l.latency_ms} ms</td>
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
@@ -1054,6 +1080,7 @@ async function toggleProvider(id){
 }
 async function loadProviders(){
   PROVS=await api('/admin/api/providers');
+  KEYNOTE_MAP=null; // 密钥备注可能变化，下次日志渲染重新构建
   document.querySelector('#provTable tbody').innerHTML=PROVS.map(p=>`<tr>
     <td><b>${esc(p.name)}</b>${p.note?`<div class="muted-xs">${esc(p.note)}</div>`:''}</td>
     <td><span class="badge badge-muted">${esc(p.kind)}</span></td>
@@ -1539,6 +1566,7 @@ function logGoPage(p){
 }
 async function loadLogs(){
   try{
+    await ensureKeyNotes();
     const d=await api('/admin/api/logs?page='+LOGPAGE.page+'&page_size='+LOGPAGE.size);
     LOGROWS=d.logs||[];
     LOGPAGE.total=d.total||0;
@@ -1549,7 +1577,7 @@ async function loadLogs(){
     document.getElementById('logNext').disabled=LOGPAGE.page>=pages;
     document.querySelector('#logsTable tbody').innerHTML=LOGROWS.map((l,i)=>`<tr>
     <td>${fmtTime(l.time)}</td><td>${esc(l.key_note||'-')}</td><td>${esc(l.model)}</td>
-    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs">${esc(l.upstream_key||'-')}</td><td>${l.latency_ms} ms</td>
+    <td>${esc(l.provider||'-')}</td><td>${esc(l.upstream_model||'-')}</td><td class="muted-xs" title="${esc(l.upstream_key||'')}">${esc(upKeyLabel(l.provider,l.upstream_key))}</td><td>${l.latency_ms} ms</td>
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
@@ -1574,6 +1602,10 @@ function showLogDetail(i){
     html+=sec('上游响应（HTTP '+(rp.status!=null?rp.status:'-')+'）',rp.body||'');
   }else{
     html=sec('调试数据',l.debug||'');
+  }
+  const upNote=KEYNOTE_MAP&&KEYNOTE_MAP.get((l.provider||'')+'|'+(l.upstream_key||''));
+  if(upNote){
+    html='<div style="margin-bottom:14px"><div class="label" style="margin-bottom:4px">上游密钥</div><div><b>'+esc(upNote)+'</b> <span class="muted-xs">'+esc(l.upstream_key||'')+'</span></div></div>'+html;
   }
   document.getElementById('logDetailBody').innerHTML=html;
   openModal('mLogDetail');
