@@ -997,7 +997,7 @@ async function loadStats(){
   const okReq=creq-cfail;
   const cacheRate=t.prompt_tokens>0?((t.cached_tokens||0)*100/t.prompt_tokens).toFixed(1)+'%':'—';
   document.getElementById('statCards').innerHTML=
-    card('请求数',creq,'尝试 '+fmtNum(t.requests)+' 次'+(rangeTxt?' · '+rangeTxt:''))+
+    card('请求数',creq,(creq!==t.requests?'尝试 '+fmtNum(t.requests)+' 次':'')+(rangeTxt?(creq!==t.requests?' · ':'')+rangeTxt:''))+
     card('错误数',cfail,cfail?'成功率 '+(creq?Math.round(okReq*100/creq):0)+'%':'无失败')+
     card('输入 tokens',fmtNum(t.prompt_tokens),'原「提示 tokens」',t.prompt_tokens)+
     card('输出 tokens',fmtNum(t.completion_tokens),'原「补全 tokens」',t.completion_tokens)+
@@ -1005,7 +1005,7 @@ async function loadStats(){
     card('平均缓存率',cacheRate,'缓存命中 '+fmtNum(t.cached_tokens||0)+' / 输入 '+fmtNum(t.prompt_tokens));
   document.querySelector('#statTable tbody').innerHTML=(s.rows||[]).sort((a,b)=>a.day<b.day?1:-1).map(r=>`<tr>
     <td class="muted-xs">${esc(r.day)}</td><td>${esc(r.provider_id)}</td><td>${esc(r.model)}</td>
-    <td title="尝试 ${r.requests} 次（含密钥轮换与失败重试）">${r.client_requests!=null?r.client_requests:r.requests}</td>
+    <td title="${r.client_requests!=null?'尝试 '+r.requests+' 次（含密钥轮换与失败重试）':'历史数据：按尝试次数显示（共 '+r.requests+' 次）'}">${r.client_requests!=null?r.client_requests:r.requests}</td>
     <td title="尝试级错误 ${r.errors} 次">${(r.client_errors!=null?r.client_errors:r.errors)?`<span class="badge badge-err">${r.client_errors!=null?r.client_errors:r.errors}</span>`:'<span class="badge badge-ok">0</span>'}</td>
     <td title="${r.prompt_tokens}">${fmtNum(r.prompt_tokens)}</td><td title="${r.completion_tokens}">${fmtNum(r.completion_tokens)}</td><td title="${r.cached_tokens||0}">${fmtNum(r.cached_tokens||0)}</td>
     <td>${r.requests?Math.round(r.latency_ms_sum/r.requests)+' ms':'-'}</td>

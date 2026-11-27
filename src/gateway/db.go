@@ -135,6 +135,11 @@ FROM request_logs GROUP BY day, provider_id, model`); err != nil {
 		log.Printf("[db] 重算统计失败: %v", err)
 		return
 	}
+	// 历史行（业务请求口径引入前）没有 final 标记，creq/cfail 为 0：
+	// 用尝试数回填，避免跨天汇总出现「卡处只有今天」的观感
+	if _, err := d.db.Exec(`UPDATE daily_stats SET creq=requests, cfail=errors WHERE creq=0 AND requests>0`); err != nil {
+		log.Printf("[db] 回填历史业务请求口径失败: %v", err)
+	}
 	log.Printf("[db] 已从请求日志重算每日统计")
 }
 

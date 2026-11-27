@@ -1853,10 +1853,16 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	rows = merged
 
+	// 汇总口径与明细一致：有业务口径用业务口径，历史行（creq=0）退回尝试数
 	var creq, cfail int64
 	for _, r := range rows {
-		creq += r.CReq
-		cfail += r.CFail
+		if r.CReq > 0 {
+			creq += r.CReq
+			cfail += r.CFail
+		} else {
+			creq += r.Requests
+			cfail += r.Errors
+		}
 	}
 
 	fromTs := dayStartUnix(from)
