@@ -620,6 +620,7 @@ print(resp.choices[0].message.content)</pre>
             <li><code>401 invalid_api_key</code>：客户端密钥不对，去「密钥」页核对。</li>
             <li><code>404 model_not_found</code>：模型名/别名拼错，或平台模型被停用。</li>
             <li><code>429 rate_limited</code>：所有 key 的并发/时间窗限流都已满，稍后重试，或提高 key 的上限 / 增加密钥。</li>
+            <li><b>结果三态</b>：<span class="badge badge-ok">成功</span> 正常完成；<span class="badge badge-err">失败</span> 上游报错（计入错误率）；<span class="badge badge-warn">中断</span> 客户端自己断开了连接（超时、取消、关闭页面），不计入错误率、也不冷却密钥/供应商。</li>
             <li><b>首字超时 / 停滞超时</b>：错误信息里会写明「首字超时（N 秒内上游无响应）」或「流中停滞超时（N 秒无新数据）」，前者已自动重试过，后者是流式输出中途中断。</li>
             <li><code>502 all_members_failed</code>：上游全部失败，到「统计 → 最近请求」或「日志」看具体上游错误。</li>
             <li><code>503 no_available_member</code>：平台模型没有启用成员，或所有成员正在冷却。</li>
@@ -1045,7 +1046,7 @@ async function loadStats(){
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td></tr>`).join('')
+    <td>${l.status===2?`<span class="badge badge-warn" title="${esc(l.error||'客户端已断开')}">中断</span>`:(l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>')}</td></tr>`).join('')
     ||'<tr><td colspan="11"><div class="empty">该范围内暂无请求日志</div></td></tr>';
 }
 async function probeAll(){
@@ -1581,7 +1582,7 @@ async function loadLogs(){
     <td>${l.ttft_ms?l.ttft_ms+' ms':'-'}</td>
     <td>${decodeSpeed(l.completion_tokens,l.latency_ms,l.ttft_ms)}</td>
     <td>${l.prompt_tokens||0} / ${l.completion_tokens||0}</td>
-    <td>${l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>'}</td>
+    <td>${l.status===2?`<span class="badge badge-warn" title="${esc(l.error||'客户端已断开')}">中断</span>`:(l.error?`<span class="badge badge-err" title="${esc(l.error)}">失败</span>`:'<span class="badge badge-ok">成功</span>')}</td>
     <td>${l.debug?`<button class="btn btn-outline btn-sm" onclick="showLogDetail(${i})">详情</button>`:''}</td></tr>`).join('')
     ||'<tr><td colspan="12"><div class="empty">暂无请求日志</div></td></tr>';
   }catch(e){toast(e.message,true)}

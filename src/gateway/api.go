@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -524,12 +525,18 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 
 	if err != nil {
 		// 没拿到响应：网络错误 / 首字超时 / 客户端取消
-		s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
-		s.router.MarkProviderFailure(c.prov.ID, 3, 60)
 		msg := err.Error()
 		if lbl := timeoutLabel(timeoutKind, c.firstByteSec, c.stallSec); lbl != "" {
 			msg = lbl
 		}
+		if timeoutKind == 0 && clientGone(c.r, err) {
+			// 客户端自己断开：不是上游的锅，不冷却密钥/供应商，也不计入错误率
+			dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, 0, nil)
+			s.recordAttemptStatus(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, statusCanceled, cancelMsg(false, err), dbg, c.reqID, false)
+			return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, cancelMsg(false, err))}, false
+		}
+		s.router.MarkFailure(c.candKey, c.settings.CooldownBaseSec, c.settings.CooldownMaxSec)
+		s.router.MarkProviderFailure(c.prov.ID, 3, 60)
 		dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, 0, nil)
 		s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, latency, 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 		return attemptResult{handled: false, errMsg: fmt.Sprintf("%s(%s): %s", c.prov.Name, c.keyMask, msg)}, true
@@ -556,6 +563,11 @@ func (s *Server) attemptOnce(c *keyCall) (attemptResult, bool) {
 					msg = lbl
 				}
 				dbg := buildDebugPayload(c.clientReq, upReqBody, c.up.baseURL+"/chat/completions", c.pmod.Model, c.keyMask, resp.StatusCode, respHead)
+				if timeoutKind == 0 && clientGone(c.r, serr) {
+					resp.Body.Close()
+					s.recordAttemptStatus(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), ttft, prompt, compl, cached, statusCanceled, cancelMsg(committed, serr), dbg, c.reqID, false)
+					return attemptResult{handled: committed, status: http.StatusOK, errMsg: cancelMsg(committed, serr)}, false
+				}
 				s.recordAttempt(c.prov, c.pm.Name, c.pmod.Model, c.keyNote, c.keyMask, c.wantStream, time.Since(start).Milliseconds(), 0, 0, 0, 0, true, msg, dbg, c.reqID, false)
 				if committed {
 					// 已经向客户端输出过内容：只能中止，不能重试/转移
@@ -991,13 +1003,30 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 统计与日志 ----------
 
+// 日志状态：0=成功 1=上游失败 2=客户端主动断开（不计入错误率，也不惩罚密钥/供应商）
+const statusCanceled = 2
+
 func (s *Server) recordAttempt(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency, ttft int64, prompt, compl, cached int64, isErr bool, errMsg, debug, reqID string, final bool) {
+	status := 0
+	if isErr {
+		status = 1
+	}
+	s.recordAttemptStatus(prov, platformName, upModel, keyNote, upKey, stream, latency, ttft, prompt, compl, cached, status, errMsg, debug, reqID, final)
+}
+
+// recordAttemptStatus 按显式状态落日志；status=2（客户端断开）只写明细，不进每日统计与指标，
+// 避免把「客户端自己不等了」算成上游故障。
+func (s *Server) recordAttemptStatus(prov Provider, platformName, upModel, keyNote, upKey string, stream bool, latency, ttft int64, prompt, compl, cached int64, status int, errMsg, debug, reqID string, final bool) {
 	rec := RequestLog{
 		Time: time.Now().Unix(), ReqID: reqID, Final: final, KeyNote: keyNote, Model: platformName,
-		Provider: prov.Name, ProviderID: prov.ID, UpModel: upModel, UpKey: upKey, Status: map[bool]int{true: 1, false: 0}[isErr],
+		Provider: prov.Name, ProviderID: prov.ID, UpModel: upModel, UpKey: upKey, Status: status,
 		Latency: latency, TTFT: ttft, Stream: stream, PromptTok: prompt, ComplTok: compl, CachedTok: cached, Error: errMsg, Debug: debug,
 	}
 	s.db.InsertLog(rec)
+	if status == statusCanceled {
+		return
+	}
+	isErr := status == 1
 	s.db.UpsertStat(time.Now().Format("2006-01-02"), prov.ID, platformName, isErr, prompt, compl, cached, latency, ttft, final)
 	s.metrics.Observe(prov.Name, platformName, isErr, latency, ttft, prompt, compl, cached)
 }
@@ -2193,6 +2222,22 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	return s.timingMiddleware(s.corsMiddleware(mux))
+}
+
+// clientGone 判断错误是否来自「客户端主动断开」（而非上游故障或本地超时看门狗）。
+func clientGone(r *http.Request, err error) bool {
+	if r.Context().Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled)
+}
+
+// cancelMsg 生成客户端断开的日志文案，区分是否已经输出过内容。
+func cancelMsg(committed bool, err error) string {
+	if committed {
+		return "客户端已断开（已输出部分内容）"
+	}
+	return "客户端已断开（上游尚未返回任何数据）"
 }
 
 // flushAdapter 用 ResponseController 刷写，兼容中间件包装过的 ResponseWriter。
