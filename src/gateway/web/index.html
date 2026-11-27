@@ -296,7 +296,7 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <div class="card" style="padding:10px 16px;margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <span class="muted-xs">统计范围</span>
         <div class="seg" id="statPresets">
-          <button data-p="today">今天</button><button data-p="7d" class="on">近7天</button><button data-p="30d">近30天</button><button data-p="all">全部</button>
+          <button data-p="today" class="on">今天</button><button data-p="7d">近7天</button><button data-p="30d">近30天</button><button data-p="all">全部</button>
         </div>
         <input type="date" id="statFrom" class="input input-sm" style="width:150px;height:30px">
         <span class="muted-xs">至</span>
@@ -1018,7 +1018,7 @@ function go(v){
 }
 
 /* ── 统计 ── */
-let STATRANGE={preset:'7d',from:'',to:''};
+let STATRANGE={preset:'today',from:'',to:''};  // 默认今天
 function fmtLocalDay(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function statQuery(){
   if(STATRANGE.preset==='all')return'?range=all';
