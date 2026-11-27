@@ -237,6 +237,12 @@ func (s *Server) dispatchChat(w http.ResponseWriter, r *http.Request, payload ma
 		writeErr(w, http.StatusNotFound, "model_not_found", "未知模型: "+modelName)
 		return
 	}
+	// 密钥级模型白名单：该密钥未被授权使用此模型时直接拒绝（空列表 = 不限）
+	if !key.AllowsModel(modelName, pm) {
+		writeErr(w, http.StatusForbidden, "model_forbidden",
+			"该 API Key 无权使用模型: "+modelName)
+		return
+	}
 	wantStream := false
 	if b, ok := payload["stream"].(bool); ok {
 		wantStream = b
@@ -1109,7 +1115,8 @@ func truncateRunes(s string, n int) string {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.checkAPIKey(r); !ok {
+	key, ok := s.checkAPIKey(r)
+	if !ok {
 		writeErr(w, http.StatusUnauthorized, "invalid_api_key", "无效的 API Key")
 		return
 	}
@@ -1124,6 +1131,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	s.store.View(func(c *Config) {
 		for _, pm := range c.PlatformModels {
 			if !pm.Enabled {
+				continue
+			}
+			if !key.AllowsModel(pm.Name, pm) {
 				continue
 			}
 			data = append(data, entry{ID: pm.Name, Object: "model", Created: now, OwnedBy: "model-gateway"})
@@ -1904,13 +1914,14 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var body struct {
-			Note string `json:"note"`
+			Note   string   `json:"note"`
+			Models []string `json:"models"`
 		}
 		_ = readJSON(r, &body)
 		var raw [16]byte
 		_, _ = rand.Read(raw[:])
 		key := "sk-" + hex.EncodeToString(raw[:])
-		nk := APIKey{Key: key, Note: body.Note, CreatedAt: time.Now().Unix()}
+		nk := APIKey{Key: key, Note: body.Note, CreatedAt: time.Now().Unix(), Models: cleanModelList(body.Models)}
 		s.store.Update(func(c *Config) { c.APIKeys = append(c.APIKeys, nk) })
 		writeJSON(w, http.StatusOK, nk)
 	default:
@@ -1918,12 +1929,66 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// cleanModelList 去空白、去重，保留声明顺序；返回 nil 表示「不限制」。
+func cleanModelList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, m := range in {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (s *Server) handleKeyByID(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		var body struct {
+			Note   *string   `json:"note"`
+			Models *[]string `json:"models"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_request", "请求体不是合法 JSON")
+			return
+		}
+		var out APIKey
+		ok := false
+		s.store.Update(func(c *Config) {
+			for i := range c.APIKeys {
+				if c.APIKeys[i].Key != key {
+					continue
+				}
+				if body.Note != nil {
+					c.APIKeys[i].Note = *body.Note
+				}
+				if body.Models != nil {
+					c.APIKeys[i].Models = cleanModelList(*body.Models)
+				}
+				out, ok = c.APIKeys[i], true
+				return
+			}
+		})
+		if !ok {
+			writeErr(w, http.StatusNotFound, "key_not_found", "密钥不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	if r.Method != http.MethodDelete {
 		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "不支持的方法")
 		return
 	}
-	key := r.PathValue("key")
 	s.store.Update(func(c *Config) {
 		out := c.APIKeys[:0]
 		for _, k := range c.APIKeys {

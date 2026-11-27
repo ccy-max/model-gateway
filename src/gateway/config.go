@@ -28,6 +28,28 @@ type APIKey struct {
 	Note      string `json:"note,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	Disabled  bool   `json:"disabled,omitempty"`
+	// Models 该密钥允许使用的平台模型名（空 = 不限，全部可用）。
+	// 用于按密钥隔离可用模型集合，例如给某个应用只开部分模型。
+	Models []string `json:"models,omitempty"`
+}
+
+// AllowsModel 判断该密钥是否被允许调用指定平台模型（含别名解析）。
+// models 为空表示不限制。
+func (k APIKey) AllowsModel(requested string, pm PlatformModel) bool {
+	if len(k.Models) == 0 {
+		return true
+	}
+	for _, m := range k.Models {
+		if m == requested || m == pm.Name {
+			return true
+		}
+		for _, a := range pm.Aliases {
+			if m == a {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ProviderKey 供应商密钥池中的一把 key：同平台多 key 按 key 负载均衡。

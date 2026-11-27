@@ -376,13 +376,13 @@ tbody tr:hover{background:color-mix(in oklab,var(--secondary) 55%,transparent)}
       <div class="page-head">
         <h1>API 密钥</h1>
         <div class="page-actions">
-          <input id="keyNote" class="input input-sm" placeholder="备注（可选）" style="width:200px">
-          <button class="btn btn-sm" onclick="createKey()"><span class="ic" data-ic="plus"></span>新建密钥</button>
+          <button class="btn btn-sm" onclick="openKeyModal()"><span class="ic" data-ic="plus"></span>新建密钥</button>
         </div>
       </div>
+      <p class="muted-xs" style="margin:-6px 0 14px">每个密钥可限定「允许使用的模型」；留空表示不限制（全部可用）。调用方用不在白名单内的模型会收到 403。</p>
       <div class="card" style="padding:14px 20px">
         <div class="table-wrap">
-          <table id="keyTable"><thead><tr><th>密钥</th><th>备注</th><th>创建时间</th><th style="width:90px">操作</th></tr></thead><tbody></tbody></table>
+          <table id="keyTable"><thead><tr><th>密钥</th><th style="width:200px">备注</th><th>可用模型</th><th>创建时间</th><th style="width:90px">操作</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </section>
@@ -734,6 +734,31 @@ print(resp.choices[0].message.content)</pre>
     <div class="mlist" id="keyList"></div>
     <div class="modal-foot">
       <button class="btn btn-secondary btn-sm" onclick="closeModal('mKeys')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建 / 编辑 API 密钥 -->
+<div class="overlay" id="mApiKey" style="display:none">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-title" id="mApiKeyTitle">新建密钥</div>
+    <div class="form-row">
+      <label class="label">备注（可选）</label>
+      <input id="fApiKeyNote" class="input" placeholder="如：给 QwenPaw 用">
+    </div>
+    <div class="form-row">
+      <label class="label">允许使用的模型</label>
+      <p class="field-hint" style="margin-top:0">不勾选任何项 = 不限制（全部模型可用）。勾选后，该密钥只能调用勾选的模型。</p>
+      <div class="row" style="gap:8px;margin-bottom:8px">
+        <button class="btn btn-outline btn-sm" onclick="keyModelsAll(true)">全选</button>
+        <button class="btn btn-outline btn-sm" onclick="keyModelsAll(false)">全不选</button>
+        <span class="muted-xs" id="fApiKeyCount"></span>
+      </div>
+      <div id="fApiKeyModels" class="mlist" style="max-height:260px;overflow:auto"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('mApiKey')">取消</button>
+      <button class="btn btn-sm" id="fApiKeySave" onclick="saveApiKey()">创建</button>
     </div>
   </div>
 </div>
@@ -1396,17 +1421,99 @@ function delPlatform(id,name){
 }
 
 /* ── 密钥 ── */
+let KEY_MODEL_CACHE=null;   // 全部平台模型名（弹窗复选列表用）
+let EDITING_KEY=null;       // 当前编辑中的密钥；null=新建
+
+async function ensureKeyModels(){
+  if(KEY_MODEL_CACHE)return KEY_MODEL_CACHE;
+  const pms=await api('/admin/api/platform-models');
+  KEY_MODEL_CACHE=pms.filter(p=>p.enabled).map(p=>p.name);
+  return KEY_MODEL_CACHE;
+}
+
 async function loadKeys(){
   const keys=await api('/admin/api/keys');
-  document.querySelector('#keyTable tbody').innerHTML=keys.map(k=>`<tr>
-    <td><span class="key-chip mono" style="white-space:normal;word-break:break-all;max-width:560px;display:inline-block">${esc(k.key)}</span></td>
-    <td>${esc(k.note||'-')}</td>
+  document.querySelector('#keyTable tbody').innerHTML=keys.map(k=>{
+    const models=(k.models&&k.models.length)?k.models.map(m=>`<span class="badge badge-muted">${esc(m)}</span>`).join(' '):'<span class="muted-xs">不限（全部）</span>';
+    return `<tr>
+    <td><span class="key-chip mono" style="white-space:normal;word-break:break-all;max-width:420px;display:inline-block">${esc(k.key)}</span></td>
+    <td><input class="input input-sm" value="${esc(k.note||'')}" placeholder="未命名" onchange="updApiKeyNote('${esc(k.key)}',this.value)"></td>
+    <td>${models}</td>
     <td class="muted-xs">${fmtTime(k.created_at)}</td>
     <td>
+      <button class="btn btn-outline btn-sm btn-icon" title="编辑可用模型" onclick="openKeyModal('${esc(k.key)}')"><span class="ic">${ICONS.pencil}</span></button>
       <button class="btn btn-outline btn-sm btn-icon" title="复制完整密钥" onclick="copyText('${esc(k.key)}')"><span class="ic">${ICONS.copy}</span></button>
       <button class="btn btn-danger btn-sm btn-icon" title="删除" onclick="delKey('${esc(k.key)}')"><span class="ic">${ICONS.trash}</span></button>
-    </td></tr>`).join('')
-    ||'<tr><td colspan="4"><div class="empty">暂无密钥</div></td></tr>';
+    </td></tr>`;
+  }).join('')
+    ||'<tr><td colspan="5"><div class="empty">暂无密钥</div></td></tr>';
+}
+
+// 行内改备注：失焦/回车即保存
+async function updApiKeyNote(key,note){
+  try{
+    await api('/admin/api/keys/'+encodeURIComponent(key),{method:'PUT',body:JSON.stringify({note:note.trim()})});
+    toast('备注已更新');
+  }catch(e){toast(e.message,true);loadKeys()}
+}
+
+// 打开新建/编辑弹窗
+async function openKeyModal(key){
+  EDITING_KEY=key||null;
+  const names=await ensureKeyModels();
+  let current=[];
+  if(key){
+    const keys=await api('/admin/api/keys');
+    const k=keys.find(x=>x.key===key);
+    current=(k&&k.models)||[];
+    document.getElementById('mApiKeyTitle').textContent='编辑密钥';
+    document.getElementById('fApiKeySave').textContent='保存';
+    document.getElementById('fApiKeyNote').value=(k&&k.note)||'';
+  }else{
+    document.getElementById('mApiKeyTitle').textContent='新建密钥';
+    document.getElementById('fApiKeySave').textContent='创建';
+    document.getElementById('fApiKeyNote').value='';
+  }
+  document.getElementById('fApiKeyModels').innerHTML=names.map(n=>`
+    <label class="mitem"><input type="checkbox" value="${esc(n)}" ${current.includes(n)?'checked':''} onchange="keyModelsCount()"><span class="nm">${esc(n)}</span></label>
+  `).join('')||'<div class="empty">暂无启用的平台模型</div>';
+  keyModelsCount();
+  openModal('mApiKey');
+}
+
+function keyModelsAll(on){
+  document.querySelectorAll('#fApiKeyModels input[type=checkbox]').forEach(c=>c.checked=on);
+  keyModelsCount();
+}
+function keyModelsCount(){
+  const all=document.querySelectorAll('#fApiKeyModels input[type=checkbox]').length;
+  const sel=document.querySelectorAll('#fApiKeyModels input[type=checkbox]:checked').length;
+  const el=document.getElementById('fApiKeyCount');
+  if(el)el.textContent = sel===0 ? ('已选 0 / '+all+' —— 不限制，全部可用') : ('已选 '+sel+' / '+all);
+}
+function keyModelsSelected(){
+  return [...document.querySelectorAll('#fApiKeyModels input[type=checkbox]:checked')].map(c=>c.value);
+}
+
+async function saveApiKey(){
+  const note=document.getElementById('fApiKeyNote').value.trim();
+  const models=keyModelsSelected();
+  try{
+    if(EDITING_KEY){
+      await api('/admin/api/keys/'+encodeURIComponent(EDITING_KEY),{method:'PUT',body:JSON.stringify({note,models})});
+      toast('已保存');
+    }else{
+      const k=await api('/admin/api/keys',{method:'POST',body:JSON.stringify({note,models})});
+      toast('已创建：'+k.key);
+    }
+    closeModal('mApiKey');
+    loadKeys();
+  }catch(e){toast(e.message,true)}
+}
+
+async function createKey(){
+  // 兼容旧调用入口：直接打开弹窗
+  openKeyModal();
 }
 function copyText(t){
   const done=()=>toast('已复制到剪贴板');
@@ -1419,10 +1526,6 @@ function copyText(t){
   };
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done).catch(fallback)}
   else fallback();
-}
-async function createKey(){
-  const note=document.getElementById('keyNote').value.trim();
-  try{const k=await api('/admin/api/keys',{method:'POST',body:JSON.stringify({note})});toast('已创建：'+k.key);document.getElementById('keyNote').value='';loadKeys()}catch(e){toast(e.message,true)}
 }
 function delKey(key){
   confirmBox('删除密钥','确认删除 '+key.slice(0,10)+'… ？使用该密钥的调用将立即失效。',async()=>{
