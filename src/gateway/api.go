@@ -781,6 +781,10 @@ func (s *Server) heartbeatSec() int {
 
 // streamWith 把上游 SSE 逐行转给客户端（sw 可能已经因心跳提交过响应头）。
 func (s *Server) streamWith(sw *sseWriter, resp *http.Response, start time.Time) (prompt, compl, cached, ttft int64, committed bool, err error) {
+	// sawDone：上游已发 [DONE]（或客户端已达流末尾），此后一律视为成功。
+	// OpenAI 客户端收到 [DONE] 就会关闭连接，网关此时再读上游必然拿到
+	// "context canceled"；那不是「客户端中途放弃」，不能记成中断/失败。
+	sawDone := false
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -812,8 +816,19 @@ func (s *Server) streamWith(sw *sseWriter, resp *http.Response, start time.Time)
 		if !sw.Committed() && ((isData && payload != "") || sw.PendingLen() > 2000) {
 			sw.Commit()
 		}
+		// 收到 [DONE] 即本次流已完整结束：主动收尾，不再继续读上游，
+		// 避免客户端正常关闭连接后被误判成「客户端已断开」。
+		if isData && payload == "[DONE]" {
+			sw.Commit()
+			sawDone = true
+			break
+		}
 	}
 	committed = sw.Committed()
+	if sawDone {
+		_ = resp.Body.Close()
+		return prompt, compl, cached, ttft, true, nil
+	}
 	if serr := sc.Err(); serr != nil {
 		if !committed {
 			return 0, 0, 0, 0, false, serr
